@@ -5,12 +5,12 @@ import { db } from "../firebase/db";
 
 const COURSES = {
   "campestre-slp": {
-    name: "Campestre SLP",
+    name: "Campestre de San Luis",
     parValues: [4, 3, 4, 4, 4, 4, 5, 3, 5, 5, 3, 4, 4, 4, 3, 4, 4, 5],
     strokeIndexes: [3, 13, 15, 7, 5, 1, 17, 11, 9, 4, 12, 6, 14, 18, 8, 2, 16, 10],
   },
   "la-loma": {
-    name: "La Loma",
+    name: "La Loma Golf",
     parValues: [4, 4, 4, 3, 5, 5, 4, 3, 4, 4, 3, 4, 4, 4, 5, 4, 3, 5],
     strokeIndexes: [11, 3, 13, 17, 7, 5, 1, 15, 9, 2, 18, 10, 16, 4, 8, 14, 12, 6],
   },
@@ -48,7 +48,7 @@ export default function GroupScorecard() {
     return doc(db, "sessions", sessionId, "groups", groupId, "state", "main");
   }, [sessionId, groupId]);
 
-  // session (para courseId)
+  // 1) Doc principal de la sesión (para courseId)
   useEffect(() => {
     if (!sessionRef) return;
     const unsub = onSnapshot(sessionRef, (snap) => {
@@ -57,7 +57,7 @@ export default function GroupScorecard() {
     return () => unsub();
   }, [sessionRef]);
 
-  // meta del grupo
+  // 2) Meta del grupo
   useEffect(() => {
     if (!groupRef) return;
     const unsub = onSnapshot(groupRef, (snap) => {
@@ -66,7 +66,7 @@ export default function GroupScorecard() {
     return () => unsub();
   }, [groupRef]);
 
-  // state del grupo
+  // 3) State editable del grupo
   useEffect(() => {
     if (!stateRef) return;
     const unsub = onSnapshot(stateRef, (snap) => {
@@ -87,21 +87,8 @@ export default function GroupScorecard() {
     if (!stateRef) return;
     setSaving(true);
     try {
-      await updateDoc(stateRef, { ...patch, updatedAt: serverTimestamp() });
-      if (sessionRef) {
-        await updateDoc(sessionRef, { updatedAt: serverTimestamp() });
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const updateCourse = async (nextCourseId) => {
-    if (!sessionRef) return;
-    setSaving(true);
-    try {
-      await updateDoc(sessionRef, {
-        courseId: nextCourseId,
+      await updateDoc(stateRef, {
+        ...patch,
         updatedAt: serverTimestamp(),
       });
     } finally {
@@ -115,6 +102,7 @@ export default function GroupScorecard() {
       alert("Máximo 6 jugadores por grupo.");
       return;
     }
+
     const existingIds = players.map((p) => p.id);
     const id = makePlayerId(existingIds);
 
@@ -131,6 +119,7 @@ export default function GroupScorecard() {
     const newScores = { ...scores };
     delete newScores[playerId];
 
+    // Limpia greenies si ese player estaba seleccionado
     const greenies = state.greenies || {};
     const newGreenies = { ...greenies };
     Object.keys(newGreenies).forEach((h) => {
@@ -148,6 +137,7 @@ export default function GroupScorecard() {
 
   const updateScore = async (playerId, holeIndex, value) => {
     if (!state) return;
+
     const arr = Array.isArray(scores[playerId]) ? [...scores[playerId]] : Array(18).fill("");
     arr[holeIndex] = value;
 
@@ -166,25 +156,11 @@ export default function GroupScorecard() {
           <h1 style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>
             {groupMeta.name || groupId}
           </h1>
-          <div style={{ opacity: 0.8, marginTop: 6 }}>
-            Session: <code>{sessionId}</code> · Group: <code>{groupId}</code>
+
+          <div style={{ opacity: 0.85, marginTop: 6 }}>
+            Session: <code>{sessionId}</code> · Group: <code>{groupId}</code> · Campo:{" "}
+            <b>{course.name}</b>
             {saving ? <span style={{ marginLeft: 10 }}>Guardando…</span> : null}
-          </div>
-
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ opacity: 0.8 }}>Curso:</span>
-            <select
-              value={courseId}
-              onChange={(e) => updateCourse(e.target.value)}
-              style={select}
-            >
-              <option value="campestre-slp">{COURSES["campestre-slp"].name}</option>
-              <option value="la-loma">{COURSES["la-loma"].name}</option>
-            </select>
-
-            <span style={{ opacity: 0.8, marginLeft: 8 }}>
-              (Par/Ventaja se actualizan con el curso)
-            </span>
           </div>
         </div>
 
@@ -193,10 +169,10 @@ export default function GroupScorecard() {
         </button>
       </div>
 
-      <hr style={{ margin: "18px 0" }} />
+      <hr style={{ margin: "18px 0", borderColor: "#2a2a2a" }} />
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={addPlayer} disabled={players.length >= 6} style={{ padding: "10px 14px" }}>
+        <button onClick={addPlayer} disabled={players.length >= 6} style={btn}>
           + Agregar jugador ({players.length}/6)
         </button>
       </div>
@@ -204,26 +180,35 @@ export default function GroupScorecard() {
       <div style={{ marginTop: 16, overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 980 }}>
           <thead>
+            {/* Row 1: headers hoyos */}
             <tr>
               <th style={thSticky}>Jugador</th>
               {Array.from({ length: 18 }).map((_, i) => (
-                <th key={i} style={th}>{i + 1}</th>
+                <th key={i} style={th}>
+                  {i + 1}
+                </th>
               ))}
               <th style={th}>Total</th>
             </tr>
 
+            {/* Row 2: Par */}
             <tr>
               <th style={thStickySmall}>Par</th>
               {parValues.map((p, i) => (
-                <th key={i} style={thMuted}>{p}</th>
+                <th key={i} style={thMuted}>
+                  {p}
+                </th>
               ))}
               <th style={thMuted}></th>
             </tr>
 
+            {/* Row 3: Ventaja / Stroke Index */}
             <tr>
               <th style={thStickySmall}>Ventaja</th>
               {strokeIndexes.map((si, i) => (
-                <th key={i} style={thMuted}>{si}</th>
+                <th key={i} style={thMuted}>
+                  {si}
+                </th>
               ))}
               <th style={thMuted}></th>
             </tr>
@@ -243,6 +228,7 @@ export default function GroupScorecard() {
                         onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
                         style={inputName}
                       />
+
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <input
                           type="number"
@@ -250,12 +236,9 @@ export default function GroupScorecard() {
                           onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
                           style={inputHcp}
                         />
-                        <span style={{ opacity: 0.75, fontWeight: 700 }}>Hcp</span>
-                        <button
-                          onClick={() => removePlayer(p.id)}
-                          style={btnDanger}
-                          title="Quitar jugador"
-                        >
+                        <span style={{ opacity: 0.75, fontWeight: 800 }}>Hcp</span>
+
+                        <button onClick={() => removePlayer(p.id)} style={btnDanger}>
                           Quitar
                         </button>
                       </div>
@@ -284,16 +267,18 @@ export default function GroupScorecard() {
   );
 }
 
+/* ---------- styles ---------- */
+
 const th = {
   textAlign: "center",
   padding: 8,
   background: "#1a1a1a",
   color: "white",
-  fontWeight: 800,
+  fontWeight: 900,
   borderBottom: "1px solid #2a2a2a",
 };
 
-const thMuted = { ...th, opacity: 0.7, fontWeight: 700, fontSize: 12 };
+const thMuted = { ...th, opacity: 0.7, fontWeight: 800, fontSize: 12 };
 const thSticky = { ...th, position: "sticky", left: 0, zIndex: 3, textAlign: "left", minWidth: 240 };
 const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 3, textAlign: "left" };
 
@@ -307,7 +292,7 @@ const inputName = {
   border: "1px solid #2a2a2a",
   background: "#111",
   color: "white",
-  fontWeight: 800,
+  fontWeight: 900,
 };
 
 const inputHcp = {
@@ -317,7 +302,7 @@ const inputHcp = {
   border: "1px solid #2a2a2a",
   background: "#111",
   color: "white",
-  fontWeight: 800,
+  fontWeight: 900,
 };
 
 const inputScore = {
@@ -328,7 +313,17 @@ const inputScore = {
   background: "#111",
   color: "white",
   textAlign: "center",
-  fontWeight: 800,
+  fontWeight: 900,
+};
+
+const btn = {
+  padding: "10px 14px",
+  borderRadius: 14,
+  border: "1px solid #2a2a2a",
+  background: "#141414",
+  color: "white",
+  fontWeight: 900,
+  cursor: "pointer",
 };
 
 const btnDanger = {
@@ -338,13 +333,6 @@ const btnDanger = {
   background: "#1a0f0f",
   color: "#ffb4b4",
   fontWeight: 900,
-};
-
-const select = {
-  padding: "8px 10px",
-  borderRadius: 12,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 800,
+  border: "1px solid #3a1a1a",
+  cursor: "pointer",
 };

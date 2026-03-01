@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBTKEpKl...",
+  apiKey: "AIzaSyBTKEpKlbE7CGpIdaLQd7PpTW0YlI2IHyw",
   authDomain: "golf-scorecard---gdpdv.firebaseapp.com",
   projectId: "golf-scorecard---gdpdv",
   storageBucket: "golf-scorecard---gdpdv.firebasestorage.app",

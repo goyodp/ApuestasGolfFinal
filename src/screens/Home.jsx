@@ -4,6 +4,7 @@ import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { auth, googleProvider } from "../firebase/auth";
 import { db } from "../firebase/db";
 import { doc, setDoc } from "firebase/firestore";
+import { useNavigate } from "react-router-dom";
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -59,7 +60,6 @@ const createSession = async () => {
     });
 
     setSessionId(sessionId);
-    import { useNavigate } from "react-router-dom";
 
 const navigate = useNavigate();
 navigate(`/session/${sessionId}`);

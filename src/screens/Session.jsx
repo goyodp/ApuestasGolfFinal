@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  addDoc,
   collection,
   doc,
   onSnapshot,
@@ -9,6 +8,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "../firebase/db";
 
@@ -30,11 +30,7 @@ export default function Session() {
     if (!sessionDocRef) return;
 
     const unsub = onSnapshot(sessionDocRef, (snap) => {
-      if (!snap.exists()) {
-        setSession(null);
-        return;
-      }
-      setSession(snap.data());
+      setSession(snap.exists() ? snap.data() : null);
     });
 
     return () => unsub();
@@ -76,13 +72,14 @@ export default function Session() {
   const addGroup = async () => {
     if (!sessionId) return;
     setCreatingGroup(true);
+
     try {
       const nextOrder =
         (groups?.length ? Math.max(...groups.map((g) => g.order || 0)) : 0) + 1;
 
-      // Doc ID fijo (group-1, group-2, etc.) para que sea más fácil de leer
       const groupDocId = `group-${nextOrder}`;
 
+      // 1) Meta del grupo
       await setDoc(doc(db, "sessions", sessionId, "groups", groupDocId), {
         order: nextOrder,
         name: `Grupo ${nextOrder}`,
@@ -90,12 +87,29 @@ export default function Session() {
         updatedAt: serverTimestamp(),
       });
 
-      // opcional: actualizar updatedAt del session principal
+      // 2) Estado editable del grupo (🔥 esto es lo que te faltaba)
       await setDoc(
-        doc(db, "sessions", sessionId),
-        { updatedAt: serverTimestamp() },
-        { merge: true }
+        doc(db, "sessions", sessionId, "groups", groupDocId, "state", "main"),
+        {
+          updatedAt: serverTimestamp(),
+          players: [], // máximo 6 lo controlamos en el UI
+          scores: {}, // { p1: ["",...], p2: ["",...] }
+          greenies: {}, // { "2": "p1" } holeIndex -> playerId
+          match: {
+            ventajas: {},
+            dobladas: {},
+            bets: {},
+          },
+        }
       );
+
+      // 3) Bump updatedAt del session principal
+      await updateDoc(doc(db, "sessions", sessionId), {
+        updatedAt: serverTimestamp(),
+      });
+
+      // Opcional: te mando directo al scorecard del grupo recién creado
+      // navigate(`/session/${sessionId}/group/${groupDocId}`);
     } catch (e) {
       console.error(e);
       alert(e?.message || "Error creando grupo");
@@ -131,11 +145,19 @@ export default function Session() {
           <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>
             {session.name}
           </h1>
+
           <div style={{ opacity: 0.8, marginTop: 6 }}>
             Status: <b>{session.status}</b> · Curso: <b>{session.courseId}</b>
           </div>
 
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div
+            style={{
+              marginTop: 10,
+              display: "flex",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
             <code
               style={{
                 padding: "6px 10px",
@@ -146,6 +168,7 @@ export default function Session() {
             >
               {sessionId}
             </code>
+
             <button onClick={copySessionId} style={{ padding: "8px 12px" }}>
               Copiar Session ID
             </button>
@@ -164,12 +187,29 @@ export default function Session() {
         {!settings ? (
           <div style={{ opacity: 0.75 }}>No hay settings/main todavía.</div>
         ) : (
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", opacity: 0.9 }}>
-            <div>Entry: <b>${settings.entryFee ?? 0}</b></div>
-            <div>Birdie: <b>${settings.birdiePay ?? 0}</b></div>
-            <div>Eagle: <b>${settings.eaglePay ?? 0}</b></div>
-            <div>Albatross: <b>${settings.albatrossPay ?? 0}</b></div>
-            <div>Greenie: <b>${settings.greeniePay ?? 0}</b></div>
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+              opacity: 0.9,
+            }}
+          >
+            <div>
+              Entry: <b>${settings.entryFee ?? 0}</b>
+            </div>
+            <div>
+              Birdie: <b>${settings.birdiePay ?? 0}</b>
+            </div>
+            <div>
+              Eagle: <b>${settings.eaglePay ?? 0}</b>
+            </div>
+            <div>
+              Albatross: <b>${settings.albatrossPay ?? 0}</b>
+            </div>
+            <div>
+              Greenie: <b>${settings.greeniePay ?? 0}</b>
+            </div>
           </div>
         )}
       </section>
@@ -177,7 +217,11 @@ export default function Session() {
       <section>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h2 style={{ margin: 0 }}>Groups</h2>
-          <button onClick={addGroup} disabled={creatingGroup} style={{ padding: "8px 12px" }}>
+          <button
+            onClick={addGroup}
+            disabled={creatingGroup}
+            style={{ padding: "8px 12px" }}
+          >
             {creatingGroup ? "Creando..." : "+ Agregar grupo"}
           </button>
         </div>
@@ -198,16 +242,16 @@ export default function Session() {
                 }}
               >
                 <div style={{ fontWeight: 800 }}>
-                  {g.name || g.id} <span style={{ opacity: 0.7 }}>(order {g.order})</span>
+                  {g.name || g.id}{" "}
+                  <span style={{ opacity: 0.7 }}>(order {g.order})</span>
                 </div>
                 <div style={{ opacity: 0.7, marginTop: 4 }}>
                   id: <code>{g.id}</code>
                 </div>
 
-                {/* siguiente paso: entrar al scorecard del grupo */}
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
                   <button
-                    onClick={() => alert("Siguiente: pantalla del scorecard del grupo")}
+                    onClick={() => navigate(`/session/${sessionId}/group/${g.id}`)}
                     style={{ padding: "8px 12px" }}
                   >
                     Abrir Scorecard →

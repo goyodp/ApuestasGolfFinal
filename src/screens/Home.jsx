@@ -59,6 +59,10 @@ const createSession = async () => {
     });
 
     setSessionId(sessionId);
+    import { useNavigate } from "react-router-dom";
+
+const navigate = useNavigate();
+navigate(`/session/${sessionId}`);
 
   } catch (e) {
     console.error(e);

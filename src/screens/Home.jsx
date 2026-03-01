@@ -3,6 +3,7 @@ import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { auth, googleProvider } from "../firebase/auth";
 import { db } from "../firebase/db";
+import { doc, setDoc } from "firebase/firestore";
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -23,27 +24,49 @@ export default function Home() {
     setSessionId("");
   };
 
-  const createSession = async () => {
-    if (!user) return;
-    setCreating(true);
-    try {
-      const ref = await addDoc(collection(db, "sessions"), {
-        name: `Session ${new Date().toLocaleString()}`,
-        status: "live",
-        courseId: "campestre-slp",
-        hcpPercent: 100,
-        createdBy: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      setSessionId(ref.id);
-    } catch (e) {
-      console.error(e);
-      alert(e?.message || "Error creando sesión");
-    } finally {
-      setCreating(false);
-    }
-  };
+const createSession = async () => {
+  if (!user) return;
+  setCreating(true);
+
+  try {
+    const sessionRef = await addDoc(collection(db, "sessions"), {
+      name: `Session ${new Date().toLocaleString()}`,
+      status: "live",
+      courseId: "campestre-slp",
+      hcpPercent: 100,
+      createdBy: user.uid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    const sessionId = sessionRef.id;
+
+    // settings/main
+    await setDoc(doc(db, "sessions", sessionId, "settings", "main"), {
+      entryFee: 0,
+      birdiePay: 0,
+      eaglePay: 0,
+      albatrossPay: 0,
+      greeniePay: 0,
+      createdAt: serverTimestamp(),
+    });
+
+    // groups/group-1
+    await setDoc(doc(db, "sessions", sessionId, "groups", "group-1"), {
+      order: 1,
+      name: "Grupo 1",
+      createdAt: serverTimestamp(),
+    });
+
+    setSessionId(sessionId);
+
+  } catch (e) {
+    console.error(e);
+    alert(e?.message || "Error creando sesión");
+  } finally {
+    setCreating(false);
+  }
+};
 
   return (
     <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 720, margin: "0 auto" }}>

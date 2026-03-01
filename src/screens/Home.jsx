@@ -1,9 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
-import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  serverTimestamp,
+  doc,
+  setDoc,
+} from "firebase/firestore";
 import { auth, googleProvider } from "../firebase/auth";
 import { db } from "../firebase/db";
-import { doc, setDoc } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 
 export default function Home() {
@@ -11,8 +16,13 @@ export default function Home() {
   const [creating, setCreating] = useState(false);
   const [sessionId, setSessionId] = useState("");
 
+  // ✅ Hook en el top level (correcto)
+  const navigate = useNavigate();
+
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u || null);
+    });
     return () => unsub();
   }, []);
 
@@ -25,86 +35,124 @@ export default function Home() {
     setSessionId("");
   };
 
-const createSession = async () => {
-  if (!user) return;
-  setCreating(true);
+  const createSession = async () => {
+    if (!user) return;
 
-  try {
-    const sessionRef = await addDoc(collection(db, "sessions"), {
-      name: `Session ${new Date().toLocaleString()}`,
-      status: "live",
-      courseId: "campestre-slp",
-      hcpPercent: 100,
-      createdBy: user.uid,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    setCreating(true);
 
-    const sessionId = sessionRef.id;
+    try {
+      // Crear documento principal
+      const sessionRef = await addDoc(collection(db, "sessions"), {
+        name: `Session ${new Date().toLocaleString()}`,
+        status: "live",
+        courseId: "campestre-slp",
+        hcpPercent: 100,
+        createdBy: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
 
-    // settings/main
-    await setDoc(doc(db, "sessions", sessionId, "settings", "main"), {
-      entryFee: 0,
-      birdiePay: 0,
-      eaglePay: 0,
-      albatrossPay: 0,
-      greeniePay: 0,
-      createdAt: serverTimestamp(),
-    });
+      const newSessionId = sessionRef.id;
 
-    // groups/group-1
-    await setDoc(doc(db, "sessions", sessionId, "groups", "group-1"), {
-      order: 1,
-      name: "Grupo 1",
-      createdAt: serverTimestamp(),
-    });
+      // Subcolección settings/main
+      await setDoc(
+        doc(db, "sessions", newSessionId, "settings", "main"),
+        {
+          entryFee: 0,
+          birdiePay: 0,
+          eaglePay: 0,
+          albatrossPay: 0,
+          greeniePay: 0,
+          createdAt: serverTimestamp(),
+        }
+      );
 
-    setSessionId(sessionId);
+      // Subcolección groups/group-1
+      await setDoc(
+        doc(db, "sessions", newSessionId, "groups", "group-1"),
+        {
+          order: 1,
+          name: "Grupo 1",
+          createdAt: serverTimestamp(),
+        }
+      );
 
-const navigate = useNavigate();
-navigate(`/session/${sessionId}`);
+      setSessionId(newSessionId);
 
-  } catch (e) {
-    console.error(e);
-    alert(e?.message || "Error creando sesión");
-  } finally {
-    setCreating(false);
-  }
-};
+      // ✅ Navegación correcta
+      navigate(`/session/${newSessionId}`);
+    } catch (error) {
+      console.error(error);
+      alert(error?.message || "Error creando sesión");
+    } finally {
+      setCreating(false);
+    }
+  };
 
   return (
-    <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 720, margin: "0 auto" }}>
+    <div
+      style={{
+        padding: 20,
+        fontFamily: "system-ui",
+        maxWidth: 720,
+        margin: "0 auto",
+      }}
+    >
       <h1 style={{ fontSize: 28, fontWeight: 800 }}>Apuestas Golf</h1>
 
       {!user ? (
-        <button onClick={login} style={{ marginTop: 12, padding: "10px 14px" }}>
+        <button
+          onClick={login}
+          style={{ marginTop: 12, padding: "10px 14px" }}
+        >
           Login con Google
         </button>
       ) : (
         <div style={{ marginTop: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {user.photoURL && (
-              <img src={user.photoURL} alt="avatar" width={36} height={36} style={{ borderRadius: 999 }} />
+              <img
+                src={user.photoURL}
+                alt="avatar"
+                width={36}
+                height={36}
+                style={{ borderRadius: 999 }}
+              />
             )}
+
             <div>
-              <div style={{ fontWeight: 700 }}>{user.displayName}</div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>{user.email}</div>
+              <div style={{ fontWeight: 700 }}>
+                {user.displayName}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                {user.email}
+              </div>
             </div>
-            <button onClick={logout} style={{ marginLeft: "auto", padding: "8px 12px" }}>
+
+            <button
+              onClick={logout}
+              style={{ marginLeft: "auto", padding: "8px 12px" }}
+            >
               Logout
             </button>
           </div>
 
           <hr style={{ margin: "16px 0" }} />
 
-          <button onClick={createSession} disabled={creating} style={{ padding: "10px 14px" }}>
+          <button
+            onClick={createSession}
+            disabled={creating}
+            style={{ padding: "10px 14px" }}
+          >
             {creating ? "Creando..." : "Crear sesión"}
           </button>
 
           {sessionId && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700 }}>Session ID:</div>
-              <code style={{ display: "inline-block", marginTop: 4 }}>{sessionId}</code>
+              <code style={{ display: "inline-block", marginTop: 4 }}>
+                {sessionId}
+              </code>
             </div>
           )}
         </div>

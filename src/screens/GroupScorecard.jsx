@@ -145,6 +145,9 @@ export default function GroupScorecard() {
     return () => unsub();
   }, [stateRef]);
 
+  // NOTE: según tu brief, courseId/hcpPercent son globales a nivel sesión.
+  // Aquí los estás leyendo de settings/main. Si tus valores viven en sessions/{sessionId},
+  // cambia esto a leer del doc principal. Por ahora lo dejo igual a tu código.
   const courseId = settings?.courseId || "campestre-slp";
   const hcpPercent = settings?.hcpPercent ?? 100; // ONLY net + stableford
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
@@ -361,20 +364,36 @@ export default function GroupScorecard() {
     <div style={page}>
       <div style={header}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
             {groupMeta?.name || groupId}
           </h1>
 
-          <div style={{ opacity: 0.8, marginTop: 6, fontSize: 13 }}>
+          <div style={{ opacity: 0.85, marginTop: 6, fontSize: 13 }}>
             Campo: <b>{course.name}</b> · %Hcp (Net/STB): <b>{hcpPercent}</b> · Matches: <b>100%</b>
             {saving ? <span style={{ marginLeft: 10 }}>Guardando…</span> : null}
           </div>
 
           <div style={payoutRow}>
-            <PayoutInput label="Birdie" value={groupSettings.birdiePay ?? 0} onBlur={(v) => updateGroupSetting("birdiePay", v)} />
-            <PayoutInput label="Eagle" value={groupSettings.eaglePay ?? 0} onBlur={(v) => updateGroupSetting("eaglePay", v)} />
-            <PayoutInput label="Albatross/HIO" value={groupSettings.albatrossPay ?? 0} onBlur={(v) => updateGroupSetting("albatrossPay", v)} />
-            <PayoutInput label="Greens" value={groupSettings.greensPay ?? 0} onBlur={(v) => updateGroupSetting("greensPay", v)} />
+            <PayoutInput
+              label="Birdie"
+              value={groupSettings.birdiePay ?? 0}
+              onBlur={(v) => updateGroupSetting("birdiePay", v)}
+            />
+            <PayoutInput
+              label="Eagle"
+              value={groupSettings.eaglePay ?? 0}
+              onBlur={(v) => updateGroupSetting("eaglePay", v)}
+            />
+            <PayoutInput
+              label="Albatross/HIO"
+              value={groupSettings.albatrossPay ?? 0}
+              onBlur={(v) => updateGroupSetting("albatrossPay", v)}
+            />
+            <PayoutInput
+              label="Greens"
+              value={groupSettings.greensPay ?? 0}
+              onBlur={(v) => updateGroupSetting("greensPay", v)}
+            />
           </div>
         </div>
 
@@ -403,19 +422,19 @@ export default function GroupScorecard() {
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
-            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+            <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
               Solo tracking (si quieres, luego la metemos a dinero con monto).
             </div>
           </div>
         </div>
 
         {players.length < 2 ? (
-          <div style={{ opacity: 0.7, marginTop: 10 }}>Agrega jugadores para seleccionar ganadores.</div>
+          <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega jugadores para seleccionar ganadores.</div>
         ) : (
           <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
             {par3Holes.map((holeNumber) => (
               <div key={holeNumber} style={card}>
-                <div style={{ fontWeight: 900, marginBottom: 8 }}>
+                <div style={{ fontWeight: 950, marginBottom: 8 }}>
                   Hoyo {holeNumber} (Par 3)
                 </div>
                 <select
@@ -428,7 +447,7 @@ export default function GroupScorecard() {
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
-                <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+                <div style={{ opacity: 0.72, fontSize: 12, marginTop: 8 }}>
                   El ganador cobra <b>${groupSettings.greensPay}</b> a cada jugador del grupo.
                 </div>
               </div>
@@ -444,7 +463,7 @@ export default function GroupScorecard() {
       </button>
 
       {/* Score table */}
-      <div style={{ marginTop: 14, overflowX: "auto" }}>
+      <div style={{ marginTop: 14, overflowX: "auto", borderRadius: 18 }}>
         <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 1100 }}>
           <thead>
             <tr>
@@ -505,7 +524,7 @@ export default function GroupScorecard() {
               const effHcp = Math.round((p.hcp || 0) * (Number(hcpPercent) / 100));
 
               return (
-                <tr key={p.id} style={{ borderTop: "1px solid #2a2a2a" }}>
+                <tr key={p.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
                   <td style={tdSticky}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       <input
@@ -521,7 +540,7 @@ export default function GroupScorecard() {
                           onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
                           style={inputHcp}
                         />
-                        <span style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>
+                        <span style={{ fontSize: 12, opacity: 0.78, fontWeight: 900 }}>
                           eff {hcpPercent}%: <b>{effHcp}</b>
                         </span>
 
@@ -581,87 +600,27 @@ export default function GroupScorecard() {
 
       <hr style={hr} />
 
-      {/* Matches */}
-      <section style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Matches (por pareja)</h2>
+      {/* Matches (compact + screenshot-ready) */}
+      <section style={{ marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0 }}>Matches</h2>
+          <div style={{ opacity: 0.7, fontSize: 12 }}>
+            Bet = 1 monto · Doblada libre (x2 por segmento) · Solo mostramos <b>$Total</b>
+          </div>
+        </div>
 
         {players.length < 2 ? (
-          <div style={{ opacity: 0.7 }}>Agrega al menos 2 jugadores.</div>
+          <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega al menos 2 jugadores.</div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 980 }}>
-              <thead>
-                <tr>
-                  <th style={thLeft}>Match</th>
-                  <th style={th}>Bet</th>
-                  <th style={th}>Doblada F9</th>
-                  <th style={th}>Doblada B9</th>
-                  <th style={th}>F9</th>
-                  <th style={th}>B9</th>
-                  <th style={th}>Total</th>
-                  <th style={th}>$F9</th>
-                  <th style={th}>$B9</th>
-                  <th style={th}>$T</th>
-                  <th style={thStrong}>$Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {matchesList.map((m) => {
-                  const aWins = m.pairRes.total > 0;
-                  const bWins = m.pairRes.total < 0;
-                  const color = aWins ? "#86efac" : bWins ? "#fca5a5" : "#d4d4d4";
-
-                  return (
-                    <tr key={m.key} style={{ borderTop: "1px solid #222" }}>
-                      <td style={tdLeft}>
-                        <b>{m.a.name}</b> vs <b>{m.b.name}</b>
-                        <div style={{ opacity: 0.65, fontSize: 12, marginTop: 4 }}>
-                          diff HCP: <b>{m.pairRes.diff}</b> (matches 100%)
-                        </div>
-                      </td>
-
-                      <td style={td}>
-                        <input
-                          type="number"
-                          defaultValue={m.bet.amount}
-                          onBlur={(e) => setBetAmount(m.a.id, m.b.id, e.target.value)}
-                          style={inputBet}
-                        />
-                      </td>
-
-                      <td style={td}>
-                        <input
-                          type="checkbox"
-                          checked={!!m.dbl.f9}
-                          onChange={(e) => toggleDoblada(m.a.id, m.b.id, "f9", e.target.checked)}
-                        />
-                      </td>
-
-                      <td style={td}>
-                        <input
-                          type="checkbox"
-                          checked={!!m.dbl.b9}
-                          onChange={(e) => toggleDoblada(m.a.id, m.b.id, "b9", e.target.checked)}
-                        />
-                      </td>
-
-                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.front)}</td>
-                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.back)}</td>
-                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.total)}</td>
-
-                      <td style={td}>{fmtMoney(m.money.moneyF9)}</td>
-                      <td style={td}>{fmtMoney(m.money.moneyB9)}</td>
-                      <td style={td}>{fmtMoney(m.money.moneyT)}</td>
-                      <td style={{ ...tdStrong, color }}>{fmtMoney(m.money.moneyTotal)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-
-            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
-              Doblada = multiplica x2 ese segmento (checkbox libre).
-            </div>
+          <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+            {matchesList.map((m) => (
+              <MatchCard
+                key={m.key}
+                m={m}
+                onBet={(raw) => setBetAmount(m.a.id, m.b.id, raw)}
+                onDbl={(seg, checked) => toggleDoblada(m.a.id, m.b.id, seg, checked)}
+              />
+            ))}
           </div>
         )}
       </section>
@@ -673,7 +632,7 @@ export default function GroupScorecard() {
         <h2 style={{ margin: "0 0 8px 0" }}>Totales por jugador (grupo)</h2>
 
         {players.length === 0 ? (
-          <div style={{ opacity: 0.7 }}>Agrega jugadores.</div>
+          <div style={{ opacity: 0.75 }}>Agrega jugadores.</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
@@ -688,12 +647,12 @@ export default function GroupScorecard() {
               </thead>
               <tbody>
                 {moneyRows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid #222" }}>
+                  <tr key={r.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
                     <td style={tdLeft}><b>{r.name}</b></td>
                     <td style={td}>{fmtMoney(r.matches)}</td>
                     <td style={td}>{fmtMoney(r.greens)}</td>
                     <td style={td}>{fmtMoney(r.bonus)}</td>
-                    <td style={{ ...tdStrong, color: r.total > 0 ? "#86efac" : r.total < 0 ? "#fca5a5" : "white" }}>
+                    <td style={{ ...tdStrong, color: r.total > 0 ? "#16a34a" : r.total < 0 ? "#dc2626" : "#0f172a" }}>
                       {fmtMoney(r.total)}
                     </td>
                   </tr>
@@ -701,12 +660,89 @@ export default function GroupScorecard() {
               </tbody>
             </table>
 
-            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+            <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
               Bonus y Greens son zero-sum dentro del grupo. Bola Rosa por ahora no entra a dinero.
             </div>
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function MatchCard({ m, onBet, onDbl }) {
+  const aWins = m.pairRes.total > 0;
+  const bWins = m.pairRes.total < 0;
+
+  const accent =
+    aWins ? "#16a34a" :
+    bWins ? "#dc2626" :
+    "#64748b";
+
+  return (
+    <div style={matchCard}>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ fontWeight: 950, fontSize: 16, lineHeight: 1.1 }}>
+            {m.a.name} <span style={{ opacity: 0.55, fontWeight: 900 }}>vs</span> {m.b.name}
+          </div>
+          <div style={{ marginTop: 6, opacity: 0.72, fontSize: 12 }}>
+            diff HCP: <b>{m.pairRes.diff}</b> (matches 100%)
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={miniField}>
+            <div style={miniLabel}>Bet</div>
+            <input
+              type="number"
+              defaultValue={m.bet.amount}
+              onBlur={(e) => onBet(e.target.value)}
+              style={miniInput}
+              inputMode="numeric"
+            />
+          </div>
+
+          <label style={checkPill}>
+            <input
+              type="checkbox"
+              checked={!!m.dbl.f9}
+              onChange={(e) => onDbl("f9", e.target.checked)}
+            />
+            <span style={{ fontWeight: 900 }}>Doblada F9</span>
+          </label>
+
+          <label style={checkPill}>
+            <input
+              type="checkbox"
+              checked={!!m.dbl.b9}
+              onChange={(e) => onDbl("b9", e.target.checked)}
+            />
+            <span style={{ fontWeight: 900 }}>Doblada B9</span>
+          </label>
+        </div>
+      </div>
+
+      {/* scoreboard (like your screenshot) */}
+      <div style={scoreStripWrap}>
+        <div style={scoreStripHead}>
+          <div style={scoreStripH}>F9</div>
+          <div style={scoreStripH}>B9</div>
+          <div style={scoreStripH}>Total</div>
+        </div>
+
+        <div style={scoreStripBody}>
+          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.front)}</div>
+          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.back)}</div>
+          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.total)}</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+        <div style={{ ...moneyPill, borderColor: accent, color: accent }}>
+          {fmtMoney(m.money.moneyTotal)} <span style={{ opacity: 0.7, fontWeight: 900 }}>total</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -727,11 +763,11 @@ function PayoutInput({ label, value, onBlur }) {
 }
 
 function scoreStyle(cat) {
-  if (cat === "albatross") return { borderColor: "#ff77c8", background: "#2a0f22" }; // rosa
-  if (cat === "eagle") return { borderColor: "#7dffb0", background: "#0d2417" };     // verde
-  if (cat === "birdie") return { borderColor: "#ffb15c", background: "#2a1b0b" };    // naranja
-  if (cat === "bogey") return { borderColor: "#7aa7ff", background: "#0f182a" };     // azul
-  if (cat === "double") return { borderColor: "#ff6b6b", background: "#2a0f0f" };    // rojo
+  if (cat === "albatross") return { borderColor: "#ff77c8", background: "rgba(255,119,200,0.12)" }; // rosa
+  if (cat === "eagle") return { borderColor: "#22c55e", background: "rgba(34,197,94,0.12)" };       // verde
+  if (cat === "birdie") return { borderColor: "#fb923c", background: "rgba(251,146,60,0.12)" };      // naranja
+  if (cat === "bogey") return { borderColor: "#60a5fa", background: "rgba(96,165,250,0.12)" };       // azul
+  if (cat === "double") return { borderColor: "#ef4444", background: "rgba(239,68,68,0.12)" };       // rojo
   return {};
 }
 
@@ -747,7 +783,15 @@ function fmtMoney(n) {
 }
 
 // ---------- styles ----------
-const page = { padding: 16, fontFamily: "system-ui", maxWidth: 1100, margin: "0 auto", color: "white" };
+const page = {
+  padding: 16,
+  fontFamily: "system-ui",
+  maxWidth: 1100,
+  margin: "0 auto",
+  color: "#0f172a",
+  background: "radial-gradient(1200px 800px at 20% -20%, rgba(59,130,246,0.14), transparent 55%), radial-gradient(900px 600px at 120% 10%, rgba(34,197,94,0.12), transparent 55%), linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)",
+  minHeight: "100vh",
+};
 
 const header = {
   display: "flex",
@@ -756,42 +800,212 @@ const header = {
   position: "sticky",
   top: 0,
   zIndex: 15,
-  background: "#0b0b0b",
+  backdropFilter: "blur(10px)",
+  background: "rgba(248,250,252,0.86)",
   paddingBottom: 10,
-  borderBottom: "1px solid #1f1f1f",
+  paddingTop: 10,
+  borderBottom: "1px solid rgba(15,23,42,0.08)",
 };
 
 const payoutRow = { marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" };
 
-const pill = { padding: "10px 12px", borderRadius: 16, border: "1px solid #242424", background: "#0f0f0f", minWidth: 140 };
-const pillLabel = { opacity: 0.75, fontSize: 12, fontWeight: 900 };
-const pillInput = { marginTop: 6, width: "100%", padding: "10px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900 };
+const pill = {
+  padding: "10px 12px",
+  borderRadius: 16,
+  border: "1px solid rgba(15,23,42,0.10)",
+  background: "rgba(255,255,255,0.75)",
+  minWidth: 140,
+  boxShadow: "0 10px 25px rgba(2,6,23,0.06)",
+};
+const pillLabel = { opacity: 0.7, fontSize: 12, fontWeight: 950, color: "#0f172a" };
+const pillInput = {
+  marginTop: 6,
+  width: "100%",
+  padding: "10px 10px",
+  borderRadius: 12,
+  border: "1px solid rgba(15,23,42,0.14)",
+  background: "white",
+  color: "#0f172a",
+  fontWeight: 950,
+};
 
-const card = { border: "1px solid #2a2a2a", borderRadius: 18, padding: 14, background: "#0f0f0f" };
-const select = { padding: "10px 12px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900, width: "100%" };
+const card = {
+  border: "1px solid rgba(15,23,42,0.10)",
+  borderRadius: 18,
+  padding: 14,
+  background: "rgba(255,255,255,0.75)",
+  boxShadow: "0 14px 30px rgba(2,6,23,0.07)",
+};
+const select = {
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(15,23,42,0.14)",
+  background: "white",
+  color: "#0f172a",
+  fontWeight: 950,
+  width: "100%",
+};
 
-const hr = { margin: "14px 0", borderColor: "#2a2a2a" };
+const hr = { margin: "14px 0", borderColor: "rgba(15,23,42,0.10)" };
 
-const th = { textAlign: "center", padding: 8, background: "#1a1a1a", color: "white", fontWeight: 800, borderBottom: "1px solid #2a2a2a", whiteSpace: "nowrap" };
+const th = {
+  textAlign: "center",
+  padding: 8,
+  background: "rgba(15,23,42,0.06)",
+  color: "#0f172a",
+  fontWeight: 900,
+  borderBottom: "1px solid rgba(15,23,42,0.10)",
+  whiteSpace: "nowrap",
+};
 const thLeft = { ...th, textAlign: "left" };
-const thMuted = { ...th, opacity: 0.7, fontWeight: 700, fontSize: 12 };
-const thStrong = { ...th, background: "#111827" };
+const thMuted = { ...th, opacity: 0.75, fontWeight: 800, fontSize: 12 };
+const thStrong = { ...th, background: "rgba(59,130,246,0.12)" };
 
-const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 260 };
-const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 2, textAlign: "left" };
+const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 260, background: "rgba(248,250,252,0.95)" };
+const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 2, textAlign: "left", background: "rgba(248,250,252,0.95)" };
 
-const td = { padding: 8, textAlign: "center", background: "#0f0f0f", color: "white" };
+const td = { padding: 8, textAlign: "center", background: "rgba(255,255,255,0.55)", color: "#0f172a" };
 const tdLeft = { ...td, textAlign: "left" };
-const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 260 };
-const tdStrong = { ...td, fontWeight: 900, background: "#0b1220" };
-const tdMutedCell = { ...td, opacity: 0.9, background: "#0b0b0b", fontWeight: 900 };
+const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 260, background: "rgba(248,250,252,0.92)" };
+const tdStrong = { ...td, fontWeight: 950, background: "rgba(59,130,246,0.10)" };
+const tdMutedCell = { ...td, opacity: 0.95, background: "rgba(15,23,42,0.04)", fontWeight: 950 };
 
-const inputName = { width: "100%", padding: "10px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 800 };
-const inputHcp = { width: 80, padding: "8px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 700 };
-const inputScore = { width: 42, padding: "8px 6px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#111", color: "white", textAlign: "center", fontWeight: 700 };
+const inputName = {
+  width: "100%",
+  padding: "10px 10px",
+  borderRadius: 12,
+  border: "1px solid rgba(15,23,42,0.14)",
+  background: "white",
+  color: "#0f172a",
+  fontWeight: 950,
+};
+const inputHcp = {
+  width: 86,
+  padding: "8px 10px",
+  borderRadius: 12,
+  border: "1px solid rgba(15,23,42,0.14)",
+  background: "white",
+  color: "#0f172a",
+  fontWeight: 900,
+};
+const inputScore = {
+  width: 44,
+  height: 44,
+  padding: "8px 6px",
+  borderRadius: 12,
+  border: "1px solid rgba(15,23,42,0.14)",
+  background: "white",
+  color: "#0f172a",
+  textAlign: "center",
+  fontWeight: 950,
+  outline: "none",
+};
 
-const inputBet = { width: 90, padding: "8px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", textAlign: "center", fontWeight: 900 };
+const btn = {
+  padding: "10px 14px",
+  borderRadius: 14,
+  border: "1px solid rgba(15,23,42,0.16)",
+  background: "rgba(255,255,255,0.8)",
+  color: "#0f172a",
+  fontWeight: 950,
+  cursor: "pointer",
+  boxShadow: "0 12px 26px rgba(2,6,23,0.08)",
+};
 
-const btn = { padding: "10px 14px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#141414", color: "white", fontWeight: 900, cursor: "pointer" };
-const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
-const btnDanger = { padding: "8px 10px", borderRadius: 12, border: "1px solid #3a1a1a", background: "#1a0f0f", color: "#ffb4b4", fontWeight: 800 };
+const btnPrimary = {
+  ...btn,
+  background: "linear-gradient(180deg, rgba(59,130,246,0.22), rgba(59,130,246,0.12))",
+  border: "1px solid rgba(59,130,246,0.28)",
+};
+
+const btnDanger = {
+  padding: "8px 10px",
+  borderRadius: 12,
+  border: "1px solid rgba(220,38,38,0.22)",
+  background: "rgba(220,38,38,0.10)",
+  color: "#b91c1c",
+  fontWeight: 950,
+  cursor: "pointer",
+};
+
+// Matches UI
+const matchCard = {
+  borderRadius: 20,
+  border: "1px solid rgba(15,23,42,0.10)",
+  background: "linear-gradient(180deg, rgba(255,255,255,0.80) 0%, rgba(255,255,255,0.60) 100%)",
+  boxShadow: "0 18px 40px rgba(2,6,23,0.10)",
+  padding: 14,
+};
+
+const miniField = {
+  minWidth: 120,
+  borderRadius: 16,
+  border: "1px solid rgba(15,23,42,0.10)",
+  background: "rgba(255,255,255,0.75)",
+  padding: "10px 12px",
+};
+
+const miniLabel = { fontSize: 12, fontWeight: 950, opacity: 0.7 };
+const miniInput = {
+  marginTop: 6,
+  width: "100%",
+  padding: "10px 10px",
+  borderRadius: 12,
+  border: "1px solid rgba(15,23,42,0.14)",
+  background: "white",
+  fontWeight: 950,
+  textAlign: "center",
+};
+
+const checkPill = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "10px 12px",
+  borderRadius: 16,
+  border: "1px solid rgba(15,23,42,0.10)",
+  background: "rgba(255,255,255,0.75)",
+  userSelect: "none",
+};
+
+const scoreStripWrap = {
+  marginTop: 12,
+  borderRadius: 18,
+  overflow: "hidden",
+  border: "1px solid rgba(15,23,42,0.10)",
+};
+
+const scoreStripHead = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, 1fr)",
+  background: "rgba(15,23,42,0.06)",
+};
+
+const scoreStripBody = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, 1fr)",
+  background: "rgba(15,23,42,0.03)",
+};
+
+const scoreStripH = {
+  padding: "10px 10px",
+  textAlign: "center",
+  fontWeight: 950,
+  letterSpacing: -0.2,
+};
+
+const scoreStripV = {
+  padding: "18px 10px",
+  textAlign: "center",
+  fontWeight: 1000,
+  fontSize: 28,
+  letterSpacing: -0.6,
+};
+
+const moneyPill = {
+  padding: "10px 12px",
+  borderRadius: 16,
+  border: "2px solid rgba(15,23,42,0.10)",
+  background: "rgba(255,255,255,0.75)",
+  fontWeight: 1000,
+};

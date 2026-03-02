@@ -1,5 +1,5 @@
 // src/screens/Home.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithCredential } from "firebase/auth";
 import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
 import { auth } from "../firebase/auth";
@@ -29,7 +29,6 @@ function addRecent(sessionId) {
   saveRecent(next);
   return next;
 }
-
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
@@ -46,33 +45,22 @@ export default function Home() {
   const [recent, setRecent] = useState(() => loadRecent());
 
   const navigate = useNavigate();
+  const isBusy = loadingGoogle || loadingApple;
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
   }, []);
 
-  const isBusy = loadingGoogle || loadingApple;
-
-  const assertFirebaseWebConfig = () => {
-    const opts = auth?.app?.options || {};
-    const ok = !!opts.apiKey && !!opts.projectId;
-    if (!ok) {
-      throw new Error(
-        "Tu Firebase Web NO está configurado en este build (falta apiKey/projectId). " +
-          "Revisa tu archivo src/firebase/app (initializeApp) y que NO dependa de env vars que en iOS no existen."
-      );
-    }
-  };
-
   const loginGoogle = async () => {
     if (isBusy) return;
     setLoadingGoogle(true);
+
     try {
-      // 1) Login nativo (Capacitor)
+      // 1) Login nativo
       const res = await FirebaseAuthentication.signInWithGoogle();
 
-      // 2) Tokens (los tienes, ya lo vimos)
+      // 2) Tokens
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.id_token ||
@@ -86,16 +74,11 @@ export default function Home() {
         null;
 
       if (!idToken && !accessToken) {
-        throw new Error("Google regresó usuario pero no regresó idToken/accessToken.");
+        throw new Error("Google regresó respuesta pero no trajo idToken/accessToken.");
       }
 
-      // 3) Asegura que Firebase Web está bien inicializado
-      assertFirebaseWebConfig();
-
-      // 4) Firebase Web: firma con credential
+      // 3) Firebase Web sign-in (esto dispara onAuthStateChanged)
       const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
-
-      // Si aquí se vuelve a colgar, 99% es tu firebaseConfig o un auth instance duplicado.
       await signInWithCredential(auth, credential);
     } catch (e) {
       alert(normalizeErr(e));
@@ -109,7 +92,7 @@ export default function Home() {
     setLoadingApple(true);
     try {
       await FirebaseAuthentication.signInWithApple();
-      // Nota: para Apple real necesitas capability + Apple Developer
+      // Para Apple real necesitas capability + Apple Developer
     } catch (e) {
       alert(normalizeErr(e));
     } finally {
@@ -118,12 +101,8 @@ export default function Home() {
   };
 
   const logout = async () => {
-    try {
-      await FirebaseAuthentication.signOut();
-    } catch {}
-    try {
-      await signOut(auth);
-    } catch {}
+    try { await FirebaseAuthentication.signOut(); } catch {}
+    try { await signOut(auth); } catch {}
     setJoinId("");
   };
 
@@ -188,7 +167,6 @@ export default function Home() {
     saveRecent(next);
   };
 
-  // Centrado: login card en medio
   const showLoginCentered = !user;
 
   return (
@@ -198,11 +176,8 @@ export default function Home() {
           <div style={brandTitle}>Apuestas</div>
           <div style={brandSub}>Sesiones compartidas · Grupos · Matches · Greens</div>
         </div>
-
         {user ? (
-          <button onClick={logout} style={btnGhost}>
-            Logout
-          </button>
+          <button onClick={logout} style={btnGhost}>Logout</button>
         ) : null}
       </header>
 
@@ -231,97 +206,86 @@ export default function Home() {
             </div>
           </div>
         ) : (
-          <>
-            <div style={grid2}>
-              <div style={card}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  {user.photoURL ? (
-                    <img
-                      src={user.photoURL}
-                      alt="avatar"
-                      width={44}
-                      height={44}
-                      style={{ borderRadius: 999, border: "1px solid #2a2a2a" }}
-                    />
-                  ) : (
-                    <div style={avatarFallback}>👤</div>
-                  )}
+          <div style={grid2}>
+            <div style={card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                {user.photoURL ? (
+                  <img
+                    src={user.photoURL}
+                    alt="avatar"
+                    width={44}
+                    height={44}
+                    style={{ borderRadius: 999, border: "1px solid #2a2a2a" }}
+                  />
+                ) : (
+                  <div style={avatarFallback}>👤</div>
+                )}
 
-                  <div style={{ minWidth: 0 }}>
-                    <div style={nameRow}>{user.displayName || "Usuario"}</div>
-                    <div style={emailRow}>{user.email}</div>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-                  <button onClick={createSession} disabled={creating} style={btnPrimary}>
-                    {creating ? "Creando..." : "➕ Crear sesión"}
-                  </button>
-
-                  <div style={{ opacity: 0.7, fontSize: 12 }}>
-                    Crea una sesión nueva (Campo + %Hcp global + Entry global).
-                  </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={nameRow}>{user.displayName || "Usuario"}</div>
+                  <div style={emailRow}>{user.email}</div>
                 </div>
               </div>
 
-              <div style={card}>
-                <div style={cardTitle}>Entrar a una sesión</div>
-                <div style={{ opacity: 0.8, marginTop: 6 }}>Pega el Session ID y entra directo.</div>
-
-                <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-                  <input
-                    value={joinId}
-                    onChange={(e) => setJoinId(e.target.value)}
-                    placeholder="Ej: xYz123Abc..."
-                    style={input}
-                  />
-                  <button onClick={pasteFromClipboard} style={btn}>
-                    Pegar
-                  </button>
+              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+                <button onClick={createSession} disabled={creating} style={btnPrimary}>
+                  {creating ? "Creando..." : "➕ Crear sesión"}
+                </button>
+                <div style={{ opacity: 0.7, fontSize: 12 }}>
+                  Crea una sesión nueva (Campo + %Hcp global + Entry global).
                 </div>
-
-                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button onClick={joinSession} style={btnPrimary}>
-                    🚀 Entrar
-                  </button>
-                  <button onClick={() => setJoinId("")} style={btnGhost}>
-                    Limpiar
-                  </button>
-                </div>
-
-                {recent.length > 0 ? (
-                  <div style={{ marginTop: 14 }}>
-                    <div style={{ fontWeight: 950, marginBottom: 8 }}>Recientes</div>
-                    <div style={{ display: "grid", gap: 8 }}>
-                      {recent.map((id) => (
-                        <div key={id} style={recentRow}>
-                          <code style={codePill}>{id}</code>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button
-                              style={btn}
-                              onClick={() => {
-                                setJoinId(id);
-                                navigate(`/session/${id}`);
-                              }}
-                            >
-                              Abrir
-                            </button>
-                            <button style={btnDanger} onClick={() => removeRecent(id)}>
-                              ✕
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>
-                    Aquí aparecerán tus sesiones recientes.
-                  </div>
-                )}
               </div>
             </div>
-          </>
+
+            <div style={card}>
+              <div style={cardTitle}>Entrar a una sesión</div>
+              <div style={{ opacity: 0.8, marginTop: 6 }}>Pega el Session ID y entra directo.</div>
+
+              <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+                <input
+                  value={joinId}
+                  onChange={(e) => setJoinId(e.target.value)}
+                  placeholder="Ej: xYz123Abc..."
+                  style={input}
+                />
+                <button onClick={pasteFromClipboard} style={btn}>Pegar</button>
+              </div>
+
+              <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={joinSession} style={btnPrimary}>🚀 Entrar</button>
+                <button onClick={() => setJoinId("")} style={btnGhost}>Limpiar</button>
+              </div>
+
+              {recent.length > 0 ? (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontWeight: 950, marginBottom: 8 }}>Recientes</div>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {recent.map((id) => (
+                      <div key={id} style={recentRow}>
+                        <code style={codePill}>{id}</code>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            style={btn}
+                            onClick={() => {
+                              setJoinId(id);
+                              navigate(`/session/${id}`);
+                            }}
+                          >
+                            Abrir
+                          </button>
+                          <button style={btnDanger} onClick={() => removeRecent(id)}>✕</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>
+                  Aquí aparecerán tus sesiones recientes.
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </main>
     </div>
@@ -338,7 +302,6 @@ function GoogleIcon() {
     </svg>
   );
 }
-
 function AppleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
@@ -347,7 +310,7 @@ function AppleIcon() {
   );
 }
 
-// ---------- Styles ----------
+// Styles
 const page = {
   minHeight: "100vh",
   paddingLeft: 16,
@@ -360,7 +323,6 @@ const page = {
   maxWidth: 980,
   margin: "0 auto",
 };
-
 const topBar = {
   display: "flex",
   alignItems: "flex-end",
@@ -368,18 +330,10 @@ const topBar = {
   gap: 12,
   marginBottom: 16,
 };
-
 const brandTitle = { fontSize: 26, fontWeight: 950, letterSpacing: -0.4, lineHeight: 1 };
 const brandSub = { marginTop: 6, opacity: 0.7, fontSize: 13 };
-
-const mainCentered = {
-  minHeight: "calc(100vh - 160px)",
-  display: "grid",
-  placeItems: "center",
-};
-
+const mainCentered = { minHeight: "calc(100vh - 160px)", display: "grid", placeItems: "center" };
 const mainNormal = { display: "block" };
-
 const grid2 = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 };
 
 const card = {
@@ -389,7 +343,6 @@ const card = {
   background: "linear-gradient(180deg, #0b0b0b 0%, #070707 100%)",
   boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
 };
-
 const cardTitle = { fontWeight: 950, fontSize: 16 };
 
 const btn = {
@@ -401,7 +354,6 @@ const btn = {
   fontWeight: 900,
   cursor: "pointer",
 };
-
 const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
 const btnGhost = { ...btn, background: "transparent", border: "1px solid #2a2a2a", opacity: 0.95 };
 const btnDanger = { ...btn, padding: "10px 12px", border: "1px solid #3a1a1a", background: "#170808", color: "#ffb4b4" };
@@ -417,12 +369,7 @@ const btnProvider = {
   background: "#101010",
   border: "1px solid #2a2a2a",
 };
-
-const btnProviderApple = {
-  ...btnProvider,
-  background: "linear-gradient(180deg, #121212 0%, #0b0b0b 100%)",
-  border: "1px solid #2a2a2a",
-};
+const btnProviderApple = { ...btnProvider, background: "linear-gradient(180deg, #121212 0%, #0b0b0b 100%)" };
 
 const input = {
   flex: 1,
@@ -446,19 +393,10 @@ const codePill = {
   whiteSpace: "nowrap",
   maxWidth: "100%",
 };
-
 const recentRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 };
-
 const avatarFallback = {
-  width: 44,
-  height: 44,
-  borderRadius: 999,
-  background: "#111",
-  border: "1px solid #2a2a2a",
-  display: "grid",
-  placeItems: "center",
-  fontSize: 18,
+  width: 44, height: 44, borderRadius: 999, background: "#111",
+  border: "1px solid #2a2a2a", display: "grid", placeItems: "center", fontSize: 18,
 };
-
 const nameRow = { fontWeight: 950, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const emailRow = { fontSize: 12, opacity: 0.7, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };

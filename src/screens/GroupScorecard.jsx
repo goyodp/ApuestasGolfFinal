@@ -21,6 +21,8 @@ import {
   fmtMatch,
 } from "../lib/compute";
 
+/* ---------------- Helpers ---------------- */
+
 function makePlayerId(existingIds = []) {
   for (let i = 1; i <= 6; i++) {
     const id = `p${i}`;
@@ -36,6 +38,8 @@ const DEFAULT_GROUP_SETTINGS = {
   greensPay: 10,
 };
 
+const DEFAULT_BET_AMOUNT = 50;
+
 const DEFAULT_STATE = {
   players: [],
   scores: {},
@@ -47,6 +51,73 @@ const DEFAULT_STATE = {
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
 };
+
+// Allow: -12, -12.5, 12, 12.5, "", "-", ".", "-."
+function sanitizeSignedNumberStr(raw) {
+  const s = String(raw ?? "").trim();
+  if (s === "" || s === "-" || s === "." || s === "-.") return "";
+  // keep only digits, one dot, optional leading minus
+  let out = "";
+  let dot = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (i === 0 && ch === "-") {
+      out += "-";
+      continue;
+    }
+    if (ch >= "0" && ch <= "9") {
+      out += ch;
+      continue;
+    }
+    if (ch === "." && !dot) {
+      dot = true;
+      out += ".";
+      continue;
+    }
+  }
+  // prevent just "-" or "." after filtering
+  if (out === "" || out === "-" || out === "." || out === "-.") return "";
+  return out;
+}
+
+function toSignedNumber(raw, fallback = 0) {
+  const s = sanitizeSignedNumberStr(raw);
+  if (s === "") return fallback;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function sanitizeNonNegIntStr(raw) {
+  const s = String(raw ?? "").trim();
+  if (s === "") return "";
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch >= "0" && ch <= "9") out += ch;
+  }
+  return out;
+}
+
+function toNonNegInt(raw, fallback = 0) {
+  const s = sanitizeNonNegIntStr(raw);
+  if (s === "") return fallback;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) ? Math.max(0, n) : fallback;
+}
+
+// Score: digits only, 0-99 (or 0-199 if you want, change maxLen)
+function sanitizeScoreStr(raw, maxLen = 2) {
+  const s = String(raw ?? "");
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch >= "0" && ch <= "9") out += ch;
+  }
+  if (maxLen && out.length > maxLen) out = out.slice(0, maxLen);
+  return out;
+}
+
+/* ---------------- Screen ---------------- */
 
 export default function GroupScorecard() {
   const { sessionId, groupId } = useParams();
@@ -61,8 +132,12 @@ export default function GroupScorecard() {
   const [editingScores, setEditingScores] = useState({});
   const [screenshotMode, setScreenshotMode] = useState(false);
 
+  // Sticky column behavior (compact when user scrolls horizontally)
+  const [stickyCompact, setStickyCompact] = useState(false);
+  const tableWrapRef = useRef(null);
+
   // Collapsables (mobile-first)
-  const [openPlayers, setOpenPlayers] = useState(true);
+  const [openPlayers, setOpenPlayers] = useState(true); // (kept in case you use later)
   const [openPayouts, setOpenPayouts] = useState(false);
   const [openGreens, setOpenGreens] = useState(false);
   const [openMatches, setOpenMatches] = useState(false);
@@ -178,6 +253,31 @@ export default function GroupScorecard() {
     }
   };
 
+  // Default bet = 50 for every pair (auto-fill missing pairs)
+  useEffect(() => {
+    if (!state || players.length < 2) return;
+
+    const need = {};
+    let changed = false;
+
+    for (let i = 0; i < players.length; i++) {
+      for (let j = i + 1; j < players.length; j++) {
+        const key = pairKey(players[i].id, players[j].id);
+        const existing = matchBets[key];
+
+        if (!existing || typeof existing.amount !== "number") {
+          need[key] = { ...(existing || {}), amount: DEFAULT_BET_AMOUNT };
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      patchState({ matchBets: { ...matchBets, ...need } });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [players.map((p) => p.id).join("|"), state]); // intentionally coarse, avoids looping
+
   const addPlayer = async () => {
     if (!state) return;
     if (players.length >= 6) return alert("Máximo 6 jugadores por grupo.");
@@ -194,7 +294,11 @@ export default function GroupScorecard() {
   const removePlayer = async (playerId) => {
     if (!state) return;
 
-    const newPlayers = players.filter((p) => p.id !== playerId);
+    const p = players.find((x) => x.id === playerId);
+    const ok = window.confirm(`¿Seguro que quieres quitar a "${p?.name || playerId}"?\n\nEsto borra sus scores y apuestas relacionadas.`);
+    if (!ok) return;
+
+    const newPlayers = players.filter((pp) => pp.id !== playerId);
     const newScores = { ...scores };
     delete newScores[playerId];
 
@@ -234,14 +338,15 @@ export default function GroupScorecard() {
   const commitScore = async (playerId, holeIndex, value) => {
     if (!state) return;
     const arr = Array.isArray(scores[playerId]) ? [...scores[playerId]] : Array(18).fill("");
-    arr[holeIndex] = value;
+    arr[holeIndex] = value; // keep string numeric or ""
     await patchState({ scores: { ...scores, [playerId]: arr } });
   };
 
-  const onScoreChange = (playerId, holeIndex, value) => {
+  const onScoreChange = (playerId, holeIndex, raw) => {
+    const v = sanitizeScoreStr(raw, 2);
     setEditingScores((prev) => ({
       ...prev,
-      [playerId]: { ...(prev[playerId] || {}), [holeIndex]: value },
+      [playerId]: { ...(prev[playerId] || {}), [holeIndex]: v },
     }));
   };
 
@@ -261,7 +366,7 @@ export default function GroupScorecard() {
   };
 
   const updateGroupSetting = async (field, raw) => {
-    const value = Math.max(0, parseInt(raw || "0", 10));
+    const value = toNonNegInt(raw, 0);
     await patchState({ groupSettings: { ...groupSettings, [field]: value } });
   };
 
@@ -274,8 +379,8 @@ export default function GroupScorecard() {
 
   const setBetAmount = async (aId, bId, raw) => {
     const key = pairKey(aId, bId);
-    const n = Math.max(0, parseInt(raw || "0", 10));
-    const prev = matchBets[key] || { amount: 0 };
+    const n = toNonNegInt(raw, DEFAULT_BET_AMOUNT);
+    const prev = matchBets[key] || { amount: DEFAULT_BET_AMOUNT };
     await patchState({ matchBets: { ...matchBets, [key]: { ...prev, amount: n } } });
   };
 
@@ -311,6 +416,12 @@ export default function GroupScorecard() {
     }
   };
 
+  // Sticky compaction on horizontal scroll
+  const onTableScroll = (e) => {
+    const sl = e.currentTarget.scrollLeft || 0;
+    setStickyCompact(sl > 10);
+  };
+
   if (!sessionId || !groupId) return <div style={fallback}>Faltan parámetros.</div>;
   if (!groupMeta || state === undefined || !session) return <div style={fallback}>Cargando grupo...</div>;
   if (state === null) return <div style={fallback}>No pude crear state/main (revisa reglas).</div>;
@@ -335,7 +446,7 @@ export default function GroupScorecard() {
       const b = players[j];
       const key = pairKey(a.id, b.id);
 
-      const bet = matchBets[key] || { amount: 0 };
+      const bet = matchBets[key] || { amount: DEFAULT_BET_AMOUNT };
       const dbl = dobladas[key] || { f9: false, b9: false };
 
       const pairRes = computeMatchResultForPair({ a, b, scores, courseId });
@@ -346,6 +457,8 @@ export default function GroupScorecard() {
   }
 
   const subtitle = `${course.name} · %Hcp ${hcpPercent} · ${players.length}/6 jugadores`;
+
+  const stickyW = stickyCompact ? 170 : 250; // <-- column width behavior
 
   return (
     <div style={page}>
@@ -393,11 +506,15 @@ export default function GroupScorecard() {
             </div>
 
             {/* Score table */}
-            <div style={tableWrap}>
+            <div
+              ref={tableWrapRef}
+              style={tableWrap}
+              onScroll={onTableScroll}
+            >
               <table style={table}>
                 <thead>
                   <tr>
-                    <th style={thSticky}>Jugador</th>
+                    <th style={{ ...thSticky, minWidth: stickyW, width: stickyW }}>Jugador</th>
 
                     {Array.from({ length: 9 }).map((_, i) => (
                       <th key={`h-${i}`} style={th}>
@@ -419,7 +536,7 @@ export default function GroupScorecard() {
                   </tr>
 
                   <tr>
-                    <th style={thStickySmall}>Hcp</th>
+                    <th style={{ ...thStickySmall, minWidth: stickyW, width: stickyW }}>Hcp</th>
 
                     {course.parValues.slice(0, 9).map((p, i) => (
                       <th key={`pf-${i}`} style={thMuted}>
@@ -462,30 +579,38 @@ export default function GroupScorecard() {
 
                     return (
                       <tr key={p.id} style={tr}>
-                        <td style={tdSticky}>
+                        <td style={{ ...tdSticky, minWidth: stickyW, width: stickyW }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <input
                               defaultValue={p.name}
                               onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
-                              style={inputName}
+                              style={{ ...inputName, padding: stickyCompact ? "8px 9px" : inputName.padding }}
                               disabled={screenshotMode}
                             />
 
                             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                               <input
-                                type="number"
-                                defaultValue={p.hcp}
-                                onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
-                                style={inputHcp}
+                                type="text"
+                                inputMode="decimal"
+                                defaultValue={String(p.hcp ?? 0)}
+                                onChange={(e) => {
+                                  // keep field numeric as user types
+                                  e.target.value = sanitizeSignedNumberStr(e.target.value);
+                                }}
+                                onBlur={(e) => updatePlayer(p.id, "hcp", toSignedNumber(e.target.value, 0))}
+                                style={{ ...inputHcp, width: stickyCompact ? 70 : inputHcp.width }}
                                 disabled={screenshotMode}
                               />
-                              <span style={effText}>
-                                eff {hcpPercent}%: <b style={{ color: "white" }}>{effHcp}</b>
-                              </span>
+
+                              {!stickyCompact ? (
+                                <span style={effText}>
+                                  eff {hcpPercent}%: <b style={{ color: "white" }}>{effHcp}</b>
+                                </span>
+                              ) : null}
 
                               {!screenshotMode ? (
                                 <button onClick={() => removePlayer(p.id)} style={smallDangerBtn}>
-                                  Quitar
+                                  {stickyCompact ? "✕" : "Quitar"}
                                 </button>
                               ) : null}
                             </div>
@@ -500,6 +625,7 @@ export default function GroupScorecard() {
                             <td key={`sf-${p.id}-${h}`} style={td}>
                               <input
                                 inputMode="numeric"
+                                pattern="[0-9]*"
                                 value={shown}
                                 onChange={(e) => onScoreChange(p.id, h, e.target.value)}
                                 onBlur={() => onScoreBlur(p.id, h)}
@@ -520,6 +646,7 @@ export default function GroupScorecard() {
                             <td key={`sb-${p.id}-${h}`} style={td}>
                               <input
                                 inputMode="numeric"
+                                pattern="[0-9]*"
                                 value={shown}
                                 onChange={(e) => onScoreChange(p.id, h, e.target.value)}
                                 onBlur={() => onScoreBlur(p.id, h)}
@@ -540,7 +667,7 @@ export default function GroupScorecard() {
 
                   {players.length === 0 ? (
                     <tr>
-                      <td style={{ ...tdSticky, padding: 14 }} colSpan={1}>
+                      <td style={{ ...tdSticky, padding: 14, minWidth: stickyW, width: stickyW }} colSpan={1}>
                         <div style={{ opacity: 0.8, fontWeight: 800 }}>Agrega jugadores para empezar.</div>
                       </td>
                       <td style={{ padding: 14 }} colSpan={22}></td>
@@ -550,12 +677,7 @@ export default function GroupScorecard() {
               </table>
             </div>
 
-            {!screenshotMode ? (
-              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <InfoChip label="Tips" value="Desliza horizontal para hoyos" />
-                <InfoChip label="Safe" value="Inputs estables (sin flicker)" />
-              </div>
-            ) : null}
+            {/* (Removed: flicker legend chips) */}
           </section>
 
           {/* COLLAPSABLES (no estorban el scorecard) */}
@@ -650,7 +772,7 @@ export default function GroupScorecard() {
 
               <Collapsible
                 title="Matches"
-                subtitle="Bet + Doblada F9/B9 · mostramos solo $Total"
+                subtitle={`Bet default $${DEFAULT_BET_AMOUNT} + Doblada F9/B9 · mostramos solo $Total`}
                 open={openMatches}
                 setOpen={setOpenMatches}
               >
@@ -751,11 +873,14 @@ function MatchCardDark({ m, onBet, onDbl }) {
           <div style={miniFieldDark}>
             <div style={miniLabel}>Bet</div>
             <input
-              type="number"
-              defaultValue={m.bet.amount}
+              type="text"
+              inputMode="numeric"
+              defaultValue={String(m.bet.amount ?? 50)}
+              onChange={(e) => {
+                e.target.value = sanitizeNonNegIntStr(e.target.value);
+              }}
               onBlur={(e) => onBet(e.target.value)}
               style={miniInputDark}
-              inputMode="numeric"
             />
           </div>
         </div>
@@ -801,11 +926,14 @@ function PayoutInputDark({ label, value, onBlur }) {
     <div style={pillDark}>
       <div style={pillLabelDark}>{label}</div>
       <input
-        type="number"
-        defaultValue={value}
+        type="text"
+        inputMode="numeric"
+        defaultValue={String(value ?? 0)}
+        onChange={(e) => {
+          e.target.value = sanitizeNonNegIntStr(e.target.value);
+        }}
         onBlur={(e) => onBlur(e.target.value)}
         style={pillInputDark}
-        inputMode="numeric"
       />
     </div>
   );
@@ -816,15 +944,6 @@ function MiniStat({ label, value }) {
     <div style={miniStat}>
       <div style={{ opacity: 0.75, fontSize: 11, fontWeight: 900 }}>{label}</div>
       <div style={{ fontWeight: 1000, marginTop: 2 }}>{value}</div>
-    </div>
-  );
-}
-
-function InfoChip({ label, value }) {
-  return (
-    <div style={infoChip}>
-      <div style={{ opacity: 0.75, fontSize: 11, fontWeight: 900 }}>{label}</div>
-      <div style={{ fontWeight: 900 }}>{value}</div>
     </div>
   );
 }
@@ -1013,7 +1132,6 @@ const thSticky = {
   left: 0,
   zIndex: 2,
   textAlign: "left",
-  minWidth: 250,
   background: "rgba(2,6,23,0.75)",
   backdropFilter: "blur(10px)",
 };
@@ -1024,7 +1142,6 @@ const thStickySmall = {
   left: 0,
   zIndex: 2,
   textAlign: "left",
-  minWidth: 250,
   background: "rgba(2,6,23,0.75)",
   backdropFilter: "blur(10px)",
 };
@@ -1045,7 +1162,6 @@ const tdSticky = {
   left: 0,
   zIndex: 1,
   textAlign: "left",
-  minWidth: 250,
   background: "rgba(2,6,23,0.78)",
   backdropFilter: "blur(10px)",
 };
@@ -1235,14 +1351,4 @@ const miniStat = {
   border: "1px solid rgba(148,163,184,0.10)",
   background: "rgba(15,23,42,0.45)",
   padding: 10,
-};
-
-const infoChip = {
-  borderRadius: 999,
-  border: "1px solid rgba(148,163,184,0.12)",
-  background: "rgba(2,6,23,0.35)",
-  padding: "8px 10px",
-  display: "flex",
-  gap: 8,
-  alignItems: "baseline",
 };

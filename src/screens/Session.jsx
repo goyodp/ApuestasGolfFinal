@@ -31,6 +31,71 @@ const COURSES = Object.entries(COURSE_DATA).map(([id, c]) => ({
   label: c.name || id,
 }));
 
+/* ---------------- Input restrictions ---------------- */
+
+function clampInt(n, min, max) {
+  const x = parseInt(String(n ?? "").trim() || "0", 10);
+  if (Number.isNaN(x)) return min;
+  return Math.max(min, Math.min(max, x));
+}
+function clampMoney(n, min, max) {
+  const x = parseInt(String(n ?? "").trim() || "0", 10);
+  if (Number.isNaN(x)) return min;
+  return Math.max(min, Math.min(max, x));
+}
+function sanitizeSignedIntText(raw, { maxAbs = 99 } = {}) {
+  // allows: "", "-", "-12", "12"
+  const s = String(raw ?? "").trim();
+  if (s === "") return "";
+  if (s === "-") return "-";
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    const ok = (ch >= "0" && ch <= "9") || (ch === "-" && i === 0);
+    if (ok) out += ch;
+  }
+  if (out === "-" || out === "") return out;
+
+  const neg = out[0] === "-";
+  const digits = out.replace("-", "");
+  const num = parseInt(digits || "0", 10);
+  const clamped = Math.max(0, Math.min(maxAbs, num));
+  return (neg ? "-" : "") + String(clamped);
+}
+
+function toast(msg) {
+  const el = document.createElement("div");
+  el.textContent = msg;
+  Object.assign(el.style, {
+    position: "fixed",
+    left: "50%",
+    bottom: "calc(18px + env(safe-area-inset-bottom))",
+    transform: "translateX(-50%)",
+    background: "rgba(15,23,42,0.92)",
+    color: "white",
+    padding: "10px 12px",
+    borderRadius: "14px",
+    border: "1px solid rgba(148,163,184,0.18)",
+    fontWeight: 900,
+    zIndex: 9999,
+    maxWidth: "90vw",
+    textAlign: "center",
+    boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+  });
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1400);
+}
+
+function countFilledScores(scoresObj) {
+  if (!scoresObj) return 0;
+  let n = 0;
+  for (const k of Object.keys(scoresObj)) {
+    const arr = Array.isArray(scoresObj[k]) ? scoresObj[k] : [];
+    for (const v of arr) if (String(v || "").trim() !== "") n++;
+  }
+  return n;
+}
+
 export default function Session() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -51,6 +116,10 @@ export default function Session() {
   const [openH2H, setOpenH2H] = useState(false);
   const [openLeaderboards, setOpenLeaderboards] = useState(true);
   const [openGroups, setOpenGroups] = useState(true);
+
+  // Inputs as controlled (prevents weird mobile number behaviors)
+  const [hcpText, setHcpText] = useState("100");
+  const [entryText, setEntryText] = useState("0");
 
   // Cross-group H2H
   const [h2hA, setH2hA] = useState("");
@@ -105,6 +174,10 @@ export default function Session() {
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
 
+  // keep input texts in sync with live data
+  useEffect(() => setHcpText(String(hcpPercent)), [hcpPercent]);
+  useEffect(() => setEntryText(String(entryFee)), [entryFee]);
+
   const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
 
   const copySessionId = async () => {
@@ -139,6 +212,7 @@ export default function Session() {
     setSavingCourse(true);
     try {
       await updateDoc(sessionRef, { courseId: newCourseId, updatedAt: serverTimestamp() });
+      toast("Campo actualizado ✅");
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar el campo");
@@ -147,25 +221,28 @@ export default function Session() {
     }
   };
 
-  const changeHcpPercent = async (value) => {
+  const commitHcpPercent = async () => {
     if (!sessionRef) return;
-    const v = Math.max(0, Math.min(100, parseInt(value || "0", 10)));
+    // only 0..100 allowed
+    const v = clampInt(hcpText, 0, 100);
     try {
       await updateDoc(sessionRef, { hcpPercent: v, updatedAt: serverTimestamp() });
+      toast("%Hcp actualizado ✅");
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar handicap %");
     }
   };
 
-  const changeEntryFee = async (value) => {
+  const commitEntryFee = async () => {
     if (!sessionId) return;
     setSavingEntry(true);
     try {
       await ensureSettingsDoc();
       const ref = doc(db, "sessions", sessionId, "settings", "main");
-      const v = Math.max(0, parseInt(value || "0", 10));
+      const v = clampMoney(entryText, 0, 999999);
       await updateDoc(ref, { entryFee: v, updatedAt: serverTimestamp() });
+      toast("Entry actualizado ✅");
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar entry fee");
@@ -181,6 +258,7 @@ export default function Session() {
       await ensureSettingsDoc();
       const ref = doc(db, "sessions", sessionId, "settings", "main");
       await updateDoc(ref, { bolaRosaEnabled: !!checked, updatedAt: serverTimestamp() });
+      toast(`Bola Rosa ${checked ? "On" : "Off"} ✅`);
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar Bola Rosa");
@@ -205,7 +283,6 @@ export default function Session() {
 
       await updateDoc(doc(db, "sessions", sessionId), { updatedAt: serverTimestamp() });
       toast("Grupo creado ✅");
-      // Abre directo el scorecard (más user-friendly)
       navigate(`/session/${sessionId}/group/${groupDocId}`);
     } catch (e) {
       console.error(e);
@@ -321,7 +398,7 @@ export default function Session() {
     );
   }
 
-  if (!session) return <div style={page}>Cargando sesión...</div>;
+  if (!session) return <div style={page}><div style={loadingCard}>Cargando sesión…</div></div>;
 
   // groupsFull from live map
   const groupsFull = groups.map((g) => ({
@@ -348,6 +425,8 @@ export default function Session() {
       });
     }
   }
+  // stable list (prevents mobile select weirdness)
+  allPlayers.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
   const pickA = allPlayers.find((x) => x.key === h2hA) || null;
   const pickB = allPlayers.find((x) => x.key === h2hB) || null;
@@ -367,6 +446,8 @@ export default function Session() {
     h2hRes = computeMatchResultForPair({ a, b, scores, courseId });
   }
 
+  const subtitle = `${courseLabel} · %Hcp ${hcpPercent} · ${groups.length} grupos · Pool ${fmtMoney(prizes.pool)}`;
+
   return (
     <div style={page}>
       <style>{baseCss}</style>
@@ -377,11 +458,9 @@ export default function Session() {
           ←
         </button>
 
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
           <div style={barTitle}>{session.name || "Sesión"}</div>
-          <div style={barSub}>
-            {courseLabel} · %Hcp {hcpPercent} · {groups.length} grupos
-          </div>
+          <div style={barSub}>{subtitle}</div>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -398,15 +477,15 @@ export default function Session() {
         {/* Session Settings */}
         <Collapsible
           title="Configuración"
-          subtitle={`Status ${session.status || "live"} · Entry ${fmtMoney(entryFee)} · Bola Rosa ${bolaRosaEnabled ? "On" : "Off"}`}
+          subtitle={`Entry ${fmtMoney(entryFee)} · Bola Rosa ${bolaRosaEnabled ? "On" : "Off"}`}
           open={openSession}
           setOpen={setOpenSession}
         >
           <div style={grid2}>
             <div style={field}>
               <div style={label}>Session ID</div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <code style={codePill}>{sessionId}</code>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <code style={codePillRow}>{sessionId}</code>
                 <button onClick={copySessionId} style={smallBtn}>
                   Copiar
                 </button>
@@ -428,21 +507,21 @@ export default function Session() {
             <div style={field}>
               <div style={label}>% Handicap (Net/STB)</div>
               <input
-                type="number"
-                defaultValue={hcpPercent}
-                onBlur={(e) => changeHcpPercent(e.target.value)}
+                value={hcpText}
+                onChange={(e) => setHcpText(sanitizeSignedIntText(e.target.value, { maxAbs: 100 }))} // 0..100 only effectively
+                onBlur={commitHcpPercent}
                 style={inputDark}
                 inputMode="numeric"
               />
-              <div style={hint}>Matches siempre 100%.</div>
+              <div style={hint}>Rango 0–100. Matches siempre 100%.</div>
             </div>
 
             <div style={field}>
               <div style={label}>Entry fee (por jugador)</div>
               <input
-                type="number"
-                defaultValue={entryFee}
-                onBlur={(e) => changeEntryFee(e.target.value)}
+                value={entryText}
+                onChange={(e) => setEntryText(sanitizeSignedIntText(e.target.value, { maxAbs: 999999 }))}
+                onBlur={commitEntryFee}
                 style={inputDark}
                 inputMode="numeric"
               />
@@ -451,36 +530,40 @@ export default function Session() {
 
             <div style={{ ...field, gridColumn: "1 / -1" }}>
               <div style={label}>Pool & Premios</div>
-              <div style={cardDark}>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={pillStat}>
-                    <div style={pillTop}>Pool</div>
-                    <div style={pillVal}>${Math.round(prizes.pool)}</div>
-                    <div style={pillBottom}>{prizes.totalPlayers} jugadores</div>
-                  </div>
 
-                  <div style={winnersWrap}>
-                    <WinnerLine
-                      emoji="🥇"
-                      label="STB 1º"
-                      name={prizes.winners.stableford1?.name}
-                      money={prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0}
-                    />
-                    <WinnerLine
-                      emoji="🥈"
-                      label="STB 2º"
-                      name={prizes.winners.stableford2?.name}
-                      money={prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0}
-                    />
-                    <WinnerLine
-                      emoji="🏆"
-                      label="Net 1º"
-                      name={prizes.winners.net1?.name}
-                      money={prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0}
-                    />
-                    <div style={{ opacity: 0.7, fontSize: 12, marginTop: 6 }}>
-                      Net 1º excluye a los dos ganadores de Stableford.
-                    </div>
+              {/* Not cut on mobile: wrap + scroll-safe */}
+              <div style={poolCard}>
+                <div style={poolLeft}>
+                  <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>Pool</div>
+                  <div style={{ fontSize: 24, fontWeight: 1000, color: "white", marginTop: 4 }}>
+                    {fmtMoney(prizes.pool)}
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
+                    {prizes.totalPlayers} jugadores
+                  </div>
+                </div>
+
+                <div style={poolRight}>
+                  <WinnerLine
+                    emoji="🥇"
+                    label="STB 1º"
+                    name={prizes.winners.stableford1?.name}
+                    money={prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0}
+                  />
+                  <WinnerLine
+                    emoji="🥈"
+                    label="STB 2º"
+                    name={prizes.winners.stableford2?.name}
+                    money={prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0}
+                  />
+                  <WinnerLine
+                    emoji="🏆"
+                    label="Net 1º"
+                    name={prizes.winners.net1?.name}
+                    money={prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0}
+                  />
+                  <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
+                    Net 1º excluye a los dos ganadores de Stableford.
                   </div>
                 </div>
               </div>
@@ -491,13 +574,34 @@ export default function Session() {
                 <input type="checkbox" checked={bolaRosaEnabled} onChange={(e) => toggleBolaRosa(e.target.checked)} />
                 <div style={{ display: "flex", flexDirection: "column" }}>
                   <span style={{ fontWeight: 950, color: "white" }}>Habilitar Bola Rosa</span>
-                  <span style={{ fontSize: 12, opacity: 0.75 }}>
-                    Activa selección de ganador en cada grupo.
-                  </span>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Activa selección de ganador en cada grupo.</span>
                 </div>
               </label>
               {savingBolaRosa ? <div style={hint}>Guardando…</div> : null}
             </div>
+          </div>
+        </Collapsible>
+
+        {/* Leaderboards */}
+        <Collapsible
+          title="Leaderboards"
+          subtitle="Stableford y Net (General)"
+          open={openLeaderboards}
+          setOpen={setOpenLeaderboards}
+        >
+          <div style={{ display: "grid", gap: 12 }}>
+            <LeaderboardCard
+              title="Stableford"
+              rows={stablefordRows}
+              mode="stb"
+              prizes={prizes}
+            />
+            <LeaderboardCard
+              title="Net"
+              rows={netRows}
+              mode="net"
+              prizes={prizes}
+            />
           </div>
         </Collapsible>
 
@@ -563,78 +667,6 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        {/* Leaderboards */}
-        <Collapsible
-          title="Leaderboards"
-          subtitle="Stableford y Net (General)"
-          open={openLeaderboards}
-          setOpen={setOpenLeaderboards}
-        >
-          <div style={{ display: "grid", gap: 12 }}>
-            <div style={cardDark}>
-              <div style={cardTitle}>Stableford</div>
-              <div style={tableWrap}>
-                <table style={miniTable}>
-                  <thead>
-                    <tr>
-                      <th style={miniTh}>#</th>
-                      <th style={miniThLeft}>Jugador</th>
-                      <th style={miniTh}>HCP</th>
-                      <th style={miniTh}>STB</th>
-                      <th style={miniTh}>Grupo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stablefordRows.slice(0, 50).map((r, i) => (
-                      <tr key={`${r.playerKey}-${i}`}>
-                        <td style={miniTd}>{i + 1}</td>
-                        <td style={miniTdLeft}>{r.name}</td>
-                        <td style={miniTd}>{r.hcp}</td>
-                        <td style={miniTd}>
-                          <b style={{ color: "white" }}>{r.stableford}</b>
-                        </td>
-                        <td style={miniTd}>{r.groupId}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div style={hint}>Empate: gana el HCP menor.</div>
-            </div>
-
-            <div style={cardDark}>
-              <div style={cardTitle}>Net</div>
-              <div style={tableWrap}>
-                <table style={miniTable}>
-                  <thead>
-                    <tr>
-                      <th style={miniTh}>#</th>
-                      <th style={miniThLeft}>Jugador</th>
-                      <th style={miniTh}>HCP</th>
-                      <th style={miniTh}>Net</th>
-                      <th style={miniTh}>Grupo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {netRows.slice(0, 50).map((r, i) => (
-                      <tr key={`${r.playerKey}-${i}`}>
-                        <td style={miniTd}>{i + 1}</td>
-                        <td style={miniTdLeft}>{r.name}</td>
-                        <td style={miniTd}>{r.hcp}</td>
-                        <td style={miniTd}>
-                          <b style={{ color: "white" }}>{r.net}</b>
-                        </td>
-                        <td style={miniTd}>{r.groupId}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div style={hint}>Empate: gana el HCP menor.</div>
-            </div>
-          </div>
-        </Collapsible>
-
         {/* Groups */}
         <Collapsible
           title="Groups"
@@ -669,7 +701,7 @@ export default function Session() {
   );
 }
 
-/* ---------------- UI helpers ---------------- */
+/* ---------------- UI components ---------------- */
 
 function Collapsible({ title, subtitle, open, setOpen, right, children }) {
   return (
@@ -692,6 +724,13 @@ function Collapsible({ title, subtitle, open, setOpen, right, children }) {
 function GroupCard({ group, state, onOpen }) {
   const players = state?.players || [];
   const filled = countFilledScores(state?.scores);
+
+  const pct = (() => {
+    const totalSlots = players.length * 18;
+    if (!totalSlots) return 0;
+    return Math.round((filled / totalSlots) * 100);
+  })();
+
   return (
     <button style={groupCardBtn} onClick={onOpen}>
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
@@ -700,12 +739,78 @@ function GroupCard({ group, state, onOpen }) {
             {group.name || group.id}
           </div>
           <div style={{ marginTop: 6, opacity: 0.78, fontSize: 12 }}>
-            {players.length}/6 jugadores · {filled} scores capturados
+            {players.length}/6 jugadores · {filled} scores · {pct}% completo
+          </div>
+          <div style={progressTrack}>
+            <div style={{ ...progressFill, width: `${pct}%` }} />
           </div>
         </div>
         <div style={openPill}>Abrir</div>
       </div>
     </button>
+  );
+}
+
+function LeaderboardCard({ title, rows, mode, prizes }) {
+  const topKey =
+    mode === "stb"
+      ? prizes.winners.stableford1?.playerKey
+      : prizes.winners.net1?.playerKey;
+
+  const secondKey = mode === "stb" ? prizes.winners.stableford2?.playerKey : null;
+
+  return (
+    <div style={cardDark}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+        <div style={cardTitle}>{title}</div>
+        <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>
+          {rows?.length || 0} jugadores
+        </div>
+      </div>
+
+      {/* Fix “cut” on mobile: horizontal scroll + sticky name col */}
+      <div style={tableWrap}>
+        <table style={lbTable}>
+          <thead>
+            <tr>
+              <th style={lbThRank}>#</th>
+              <th style={lbThName}>Jugador</th>
+              <th style={lbTh}>HCP</th>
+              <th style={lbTh}>{mode === "stb" ? "STB" : "NET"}</th>
+              <th style={lbTh}>Grupo</th>
+              <th style={lbTh}>Premio</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows || []).slice(0, 60).map((r, i) => {
+              const prize = prizes.payoutsByPlayerKey?.[r.playerKey] || 0;
+              const isFirst = r.playerKey && r.playerKey === topKey;
+              const isSecond = r.playerKey && r.playerKey === secondKey;
+              const badge = isFirst ? "🥇" : isSecond ? "🥈" : "";
+              return (
+                <tr key={`${r.playerKey}-${i}`}>
+                  <td style={lbTdRank}>{i + 1}</td>
+                  <td style={lbTdName}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                      {badge ? <span style={{ width: 20 }}>{badge}</span> : <span style={{ width: 20 }} />}
+                      <span style={lbNameText}>{r.name}</span>
+                    </div>
+                  </td>
+                  <td style={lbTd}>{r.hcp}</td>
+                  <td style={lbTdStrong}>{mode === "stb" ? r.stableford : r.net}</td>
+                  <td style={lbTd}>{r.groupId}</td>
+                  <td style={lbTdPrize}>{prize ? fmtMoney(prize) : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.72 }}>
+        Empates: gana el HCP menor.
+      </div>
+    </div>
   );
 }
 
@@ -718,40 +823,6 @@ function WinnerLine({ emoji, label, name, money }) {
       <div style={{ opacity: 0.75 }}>{fmtMoney(money)}</div>
     </div>
   );
-}
-
-function toast(msg) {
-  // tiny toast without deps
-  const el = document.createElement("div");
-  el.textContent = msg;
-  Object.assign(el.style, {
-    position: "fixed",
-    left: "50%",
-    bottom: "calc(18px + env(safe-area-inset-bottom))",
-    transform: "translateX(-50%)",
-    background: "rgba(15,23,42,0.92)",
-    color: "white",
-    padding: "10px 12px",
-    borderRadius: "14px",
-    border: "1px solid rgba(148,163,184,0.18)",
-    fontWeight: 900,
-    zIndex: 9999,
-    maxWidth: "90vw",
-    textAlign: "center",
-    boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
-  });
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 1400);
-}
-
-function countFilledScores(scoresObj) {
-  if (!scoresObj) return 0;
-  let n = 0;
-  for (const k of Object.keys(scoresObj)) {
-    const arr = Array.isArray(scoresObj[k]) ? scoresObj[k] : [];
-    for (const v of arr) if (String(v || "").trim() !== "") n++;
-  }
-  return n;
 }
 
 /* ---------------- Styles (premium dark, mobile-first) ---------------- */
@@ -809,7 +880,7 @@ const barTitle = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
-  maxWidth: 220,
+  maxWidth: 240,
 };
 
 const barSub = {
@@ -819,7 +890,7 @@ const barSub = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
-  maxWidth: 260,
+  maxWidth: 420,
 };
 
 const chipBtn = {
@@ -895,16 +966,20 @@ const inputDark = {
   background: "rgba(15,23,42,0.55)",
   color: "white",
   fontWeight: 950,
-  width: 130,
+  width: 160,
 };
 
-const codePill = {
+const codePillRow = {
   padding: "10px 12px",
   borderRadius: 14,
   border: "1px solid rgba(148,163,184,0.14)",
   background: "rgba(2,6,23,0.35)",
   color: "white",
   fontWeight: 900,
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 const smallBtn = {
@@ -934,19 +1009,27 @@ const cardDark = {
 
 const cardTitle = { fontWeight: 950, marginBottom: 10, fontSize: 14, color: "white" };
 
-const pillStat = {
-  minWidth: 140,
+const poolCard = {
+  display: "grid",
+  gridTemplateColumns: "minmax(160px, 240px) 1fr",
+  gap: 12,
   borderRadius: 16,
   border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.45)",
+  background: "rgba(15,23,42,0.35)",
   padding: 12,
 };
 
-const pillTop = { fontSize: 12, opacity: 0.75, fontWeight: 900 };
-const pillVal = { fontSize: 22, fontWeight: 1000, marginTop: 4, color: "white" };
-const pillBottom = { fontSize: 12, opacity: 0.7, marginTop: 2 };
+const poolLeft = {
+  borderRadius: 16,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  padding: 12,
+  minWidth: 0,
+};
 
-const winnersWrap = { flex: 1, minWidth: 240 };
+const poolRight = {
+  minWidth: 0,
+};
 
 const togglePill = {
   display: "flex",
@@ -961,32 +1044,84 @@ const togglePill = {
 
 const tableWrap = { overflowX: "auto", WebkitOverflowScrolling: "touch" };
 
-const miniTable = {
+/* Leaderboard table: sticky name col + not cut */
+const lbTable = {
   width: "100%",
-  borderCollapse: "collapse",
-  fontSize: 13,
-  minWidth: 520,
+  minWidth: 720,
+  borderCollapse: "separate",
+  borderSpacing: 0,
 };
 
-const miniTh = {
-  textAlign: "center",
-  padding: 8,
-  borderBottom: "1px solid rgba(148,163,184,0.14)",
+const lbThBase = {
+  padding: 10,
+  fontSize: 12,
+  fontWeight: 950,
   opacity: 0.85,
+  borderBottom: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
   whiteSpace: "nowrap",
-};
-
-const miniThLeft = { ...miniTh, textAlign: "left" };
-
-const miniTd = {
   textAlign: "center",
-  padding: 8,
-  borderBottom: "1px solid rgba(148,163,184,0.08)",
-  opacity: 0.95,
-  whiteSpace: "nowrap",
 };
 
-const miniTdLeft = { ...miniTd, textAlign: "left", whiteSpace: "nowrap" };
+const lbThRank = { ...lbThBase, width: 52 };
+const lbTh = { ...lbThBase };
+
+const lbThName = {
+  ...lbThBase,
+  position: "sticky",
+  left: 0,
+  zIndex: 2,
+  textAlign: "left",
+  minWidth: 240,
+  background: "rgba(2,6,23,0.72)",
+  backdropFilter: "blur(10px)",
+};
+
+const lbTdBase = {
+  padding: 10,
+  borderBottom: "1px solid rgba(148,163,184,0.08)",
+  background: "rgba(15,23,42,0.15)",
+  whiteSpace: "nowrap",
+  textAlign: "center",
+};
+
+const lbTdRank = { ...lbTdBase, width: 52, opacity: 0.85 };
+
+const lbTd = { ...lbTdBase, opacity: 0.95 };
+
+const lbTdStrong = {
+  ...lbTdBase,
+  fontWeight: 1000,
+  color: "white",
+  background: "rgba(59,130,246,0.08)",
+};
+
+const lbTdPrize = {
+  ...lbTdBase,
+  fontWeight: 1000,
+  color: "#dbeafe",
+  background: "rgba(59,130,246,0.06)",
+};
+
+const lbTdName = {
+  ...lbTdBase,
+  position: "sticky",
+  left: 0,
+  zIndex: 1,
+  textAlign: "left",
+  minWidth: 240,
+  background: "rgba(2,6,23,0.78)",
+  backdropFilter: "blur(10px)",
+};
+
+const lbNameText = {
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  fontWeight: 950,
+  color: "white",
+};
 
 const groupCardBtn = {
   width: "100%",
@@ -1004,6 +1139,20 @@ const openPill = {
   background: "rgba(59,130,246,0.18)",
   color: "#dbeafe",
   fontWeight: 950,
+};
+
+const progressTrack = {
+  marginTop: 8,
+  height: 8,
+  borderRadius: 999,
+  background: "rgba(148,163,184,0.12)",
+  overflow: "hidden",
+};
+
+const progressFill = {
+  height: "100%",
+  borderRadius: 999,
+  background: "linear-gradient(90deg, rgba(59,130,246,0.65), rgba(34,197,94,0.55))",
 };
 
 const h2hStrip = {
@@ -1036,6 +1185,16 @@ const h2hVal = (v) => ({
   letterSpacing: -0.4,
   color: v > 0 ? "#22c55e" : v < 0 ? "#ef4444" : "#e5e7eb",
 });
+
+const loadingCard = {
+  margin: 14,
+  padding: 14,
+  borderRadius: 18,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  color: "white",
+  fontWeight: 950,
+};
 
 const fallbackCard = {
   borderRadius: 18,

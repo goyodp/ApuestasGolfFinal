@@ -1,6 +1,5 @@
-// src/screens/GroupScorecard.jsx
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/db";
 import {
@@ -16,8 +15,6 @@ import {
   computeBonusMoneyByPlayer,
   computeGreensMoneyByPlayer,
   computeMatchesMoneyByPlayer,
-  fmtMoney as fmtMoneyLib,
-  fmtMatch as fmtMatchLib,
 } from "../lib/compute";
 
 function makePlayerId(existingIds = []) {
@@ -32,20 +29,17 @@ const DEFAULT_GROUP_SETTINGS = {
   birdiePay: 10,
   eaglePay: 20,
   albatrossPay: 30,
-  greensPay: 10, // fixed tag "Greens"
+  greensPay: 10,
 };
 
 const DEFAULT_STATE = {
   players: [],
   scores: {},
-
   groupSettings: { ...DEFAULT_GROUP_SETTINGS },
-
   matchBets: {},
   dobladas: {},
   greens: {},
   bolaRosa: "",
-
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
 };
@@ -53,22 +47,35 @@ const DEFAULT_STATE = {
 export default function GroupScorecard() {
   const { sessionId, groupId } = useParams();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   const [groupMeta, setGroupMeta] = useState(null);
-  const [session, setSession] = useState(null); // ✅ now reading courseId/hcpPercent from session doc
-  const [settings, setSettings] = useState(null); // still useful for entryFee if you ever show it here
+  const [settings, setSettings] = useState(null);
   const [state, setState] = useState(undefined);
   const [saving, setSaving] = useState(false);
 
-  const [editingScores, setEditingScores] = useState({}); // { [playerId]: { [holeIndex]: "value" } }
+  const [editingScores, setEditingScores] = useState({});
+  const [forceCompact, setForceCompact] = useState(false);
+  const [isLandscape, setIsLandscape] = useState(false);
 
-  const screenshotMode = searchParams.get("shot") === "1";
+  useEffect(() => {
+    const mq = window.matchMedia ? window.matchMedia("(orientation: landscape)") : null;
 
-  const sessionRef = useMemo(() => {
-    if (!sessionId) return null;
-    return doc(db, "sessions", sessionId);
-  }, [sessionId]);
+    const update = () => {
+      const landscape = mq ? mq.matches : window.innerWidth > window.innerHeight;
+      setIsLandscape(!!landscape);
+    };
+
+    update();
+    if (mq && mq.addEventListener) mq.addEventListener("change", update);
+    window.addEventListener("resize", update);
+
+    return () => {
+      if (mq && mq.removeEventListener) mq.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+
+  const compact = forceCompact || isLandscape;
 
   const settingsRef = useMemo(() => {
     if (!sessionId) return null;
@@ -86,11 +93,6 @@ export default function GroupScorecard() {
   }, [sessionId, groupId]);
 
   useEffect(() => {
-    if (!sessionRef) return;
-    return onSnapshot(sessionRef, (snap) => setSession(snap.exists() ? snap.data() : null));
-  }, [sessionRef]);
-
-  useEffect(() => {
     if (!settingsRef) return;
     return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
   }, [settingsRef]);
@@ -100,7 +102,6 @@ export default function GroupScorecard() {
     return onSnapshot(groupRef, (snap) => setGroupMeta(snap.exists() ? snap.data() : null));
   }, [groupRef]);
 
-  // Listener + auto init + migration defaults
   useEffect(() => {
     if (!stateRef) return;
 
@@ -154,8 +155,10 @@ export default function GroupScorecard() {
     return () => unsub();
   }, [stateRef]);
 
-  const courseId = session?.courseId || "campestre-slp";
-  const hcpPercent = session?.hcpPercent ?? 100; // ONLY net + stableford
+  const courseId = settings?.courseId || "campestre-slp";
+  const hcpPercent = settings?.hcpPercent ?? 100;
+  const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
+
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
 
   const players = state?.players || [];
@@ -245,11 +248,9 @@ export default function GroupScorecard() {
   };
 
   const onScoreChange = (playerId, holeIndex, value) => {
-    // keep digits only (optional) - but allow empty
-    const cleaned = value === "" ? "" : value.replace(/[^\d]/g, "");
     setEditingScores((prev) => ({
       ...prev,
-      [playerId]: { ...(prev[playerId] || {}), [holeIndex]: cleaned },
+      [playerId]: { ...(prev[playerId] || {}), [holeIndex]: value },
     }));
   };
 
@@ -297,15 +298,8 @@ export default function GroupScorecard() {
     await patchState({ bolaRosa: playerIdOrEmpty || "" });
   };
 
-  const toggleScreenshot = () => {
-    const next = new URLSearchParams(searchParams);
-    if (screenshotMode) next.delete("shot");
-    else next.set("shot", "1");
-    setSearchParams(next, { replace: true });
-  };
-
   if (!sessionId || !groupId) return <div style={{ padding: 20 }}>Faltan parámetros.</div>;
-  if (!groupMeta || state === undefined || !settings || !session) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
+  if (!groupMeta || state === undefined || !settings) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
   if (state === null) return <div style={{ padding: 20 }}>No pude crear state/main (revisa reglas).</div>;
 
   // ===== Money inside group =====
@@ -364,6 +358,8 @@ export default function GroupScorecard() {
 
       const money = calcMatchMoneyForPair({
         pairResult: pairRes,
+        aId: a.id,
+        bId: b.id,
         matchBetsForPair: bet,
         dobladasForPair: dbl,
       });
@@ -374,86 +370,32 @@ export default function GroupScorecard() {
 
   return (
     <div style={page}>
-      {/* Responsive CSS (keeps your inline style system but makes mobile 🔥) */}
-      <style>{`
-        :root{
-          --fg:#0f172a;
-          --muted: rgba(15,23,42,.72);
-          --border: rgba(15,23,42,.12);
-          --glass: rgba(255,255,255,.78);
-        }
-        .ag-hide-shot{ display:${screenshotMode ? "none" : "block"}; }
-        .ag-hide-shot-flex{ display:${screenshotMode ? "none" : "flex"}; }
-        .ag-tableWrap{
-          overflow-x:auto;
-          -webkit-overflow-scrolling:touch;
-          border-radius: 18px;
-        }
-        .ag-table{
-          width:100%;
-          min-width: 1080px;
-          border-collapse:collapse;
-        }
-        @media (max-width: 760px){
-          .ag-table{ min-width: 980px; }
-        }
-        @media (max-width: 520px){
-          .ag-table{ min-width: 940px; }
-        }
-        .ag-inputScore{
-          width:44px; height:44px;
-        }
-        @media (max-width: 520px){
-          .ag-inputScore{
-            width:40px; height:40px;
-            border-radius: 10px;
-          }
-        }
-        .ag-sticky{
-          position: sticky;
-          left: 0;
-          z-index: 3;
-          box-shadow: 8px 0 18px rgba(2,6,23,.06);
-        }
-        .ag-stickyHead{
-          position: sticky;
-          top: 0;
-          z-index: 20;
-        }
-        .ag-scoreHint{
-          display:none;
-        }
-        @media (max-width: 760px){
-          .ag-scoreHint{ display:block; opacity:.65; font-size:12px; margin-top:8px; }
-        }
-      `}</style>
-
-      <div style={header} className="ag-stickyHead">
+      <div style={header}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
-              {groupMeta?.name || groupId}
-            </h1>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
+            {groupMeta?.name || groupId}
+          </h1>
 
-            <span style={badge}>
-              {course.name}
-            </span>
-
-            <span style={badgeMuted}>
-              Net/STB {hcpPercent}%
-            </span>
-
-            <span style={badgeMuted}>
-              Matches 100%
-            </span>
+          <div style={{ opacity: 0.85, marginTop: 6, fontSize: 13 }}>
+            Campo: <b>{course.name}</b> · %Hcp (Net/STB): <b>{hcpPercent}</b> · Matches: <b>100%</b>
+            {saving ? <span style={{ marginLeft: 10 }}>Guardando…</span> : null}
           </div>
 
-          <div style={{ opacity: 0.82, marginTop: 8, fontSize: 13 }}>
-            Session: <b style={{ fontWeight: 950 }}>{sessionId}</b>
-            {saving ? <span style={{ marginLeft: 10 }}>· Guardando…</span> : null}
+          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={() => setForceCompact((v) => !v)}
+              style={btn}
+              title="Ideal para screenshots (también se activa automático en landscape)"
+            >
+              {compact ? "✅ Modo Screenshot" : "📸 Modo Screenshot"}
+            </button>
+
+            <div style={{ opacity: 0.75, fontSize: 12, alignSelf: "center" }}>
+              Tip: para screenshot completo, gira el cel a horizontal.
+            </div>
           </div>
 
-          <div style={payoutRow} className="ag-hide-shot-flex">
+          <div style={payoutRow}>
             <PayoutInput
               label="Birdie"
               value={groupSettings.birdiePay ?? 0}
@@ -477,15 +419,9 @@ export default function GroupScorecard() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button onClick={toggleScreenshot} style={btn} className="ag-hide-shot">
-            {screenshotMode ? "Salir Shot" : "📸 Shot"}
-          </button>
-
-          <button onClick={() => navigate(`/session/${sessionId}`)} style={btn}>
-            ← Volver
-          </button>
-        </div>
+        <button onClick={() => navigate(`/session/${sessionId}`)} style={btn}>
+          ← Volver
+        </button>
       </div>
 
       <hr style={hr} />
@@ -495,30 +431,32 @@ export default function GroupScorecard() {
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Greens (Par 3)</h2>
 
-          <div style={{ marginLeft: "auto", minWidth: 260 }}>
-            <div style={{ fontWeight: 950, marginBottom: 6 }}>Bola Rosa</div>
-            <select
-              value={bolaRosa}
-              onChange={(e) => setBolaRosa(e.target.value)}
-              style={select}
-              disabled={players.length === 0}
-            >
-              <option value="">— Sin ganador —</option>
-              {players.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
+          {bolaRosaEnabled ? (
+            <div style={{ marginLeft: "auto", minWidth: 260 }}>
+              <div style={{ fontWeight: 950, marginBottom: 6 }}>Bola Rosa</div>
+              <select
+                value={bolaRosa}
+                onChange={(e) => setBolaRosa(e.target.value)}
+                style={select}
+                disabled={players.length === 0}
+              >
+                <option value="">— Sin ganador —</option>
+                {players.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
 
         {players.length < 2 ? (
           <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega jugadores para seleccionar ganadores.</div>
         ) : (
-          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
             {par3Holes.map((holeNumber) => (
               <div key={holeNumber} style={card}>
                 <div style={{ fontWeight: 950, marginBottom: 8 }}>
-                  Hoyo {holeNumber} <span style={{ opacity: 0.65, fontWeight: 900 }}>(Par 3)</span>
+                  Hoyo {holeNumber} (Par 3)
                 </div>
                 <select
                   value={greens[String(holeNumber)] || ""}
@@ -531,7 +469,7 @@ export default function GroupScorecard() {
                   ))}
                 </select>
                 <div style={{ opacity: 0.72, fontSize: 12, marginTop: 8 }}>
-                  Gana <b>${groupSettings.greensPay}</b> vs cada jugador.
+                  El ganador cobra <b>${groupSettings.greensPay}</b> a cada jugador del grupo.
                 </div>
               </div>
             ))}
@@ -541,22 +479,16 @@ export default function GroupScorecard() {
 
       <hr style={hr} />
 
-      <div className="ag-hide-shot-flex" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={addPlayer} disabled={players.length >= 6} style={btnPrimary}>
-          + Agregar jugador ({players.length}/6)
-        </button>
-
-        <div style={{ opacity: 0.7, fontSize: 12 }}>
-          Tip móvil: desliza horizontal en la tabla para capturar screenshots rápido.
-        </div>
-      </div>
+      <button onClick={addPlayer} disabled={players.length >= 6} style={btnPrimary}>
+        + Agregar jugador ({players.length}/6)
+      </button>
 
       {/* Score table */}
-      <div style={{ marginTop: 14 }} className="ag-tableWrap">
-        <table className="ag-table">
+      <div style={{ marginTop: 14, overflowX: "auto", borderRadius: 18 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: compact ? 980 : 1100 }}>
           <thead>
             <tr>
-              <th style={thSticky} className="ag-sticky">Jugador</th>
+              <th style={{ ...thSticky, minWidth: compact ? 220 : 260 }}>Jugador</th>
 
               {Array.from({ length: 9 }).map((_, i) => (
                 <th key={`f-${i}`} style={th}>{i + 1}</th>
@@ -574,7 +506,7 @@ export default function GroupScorecard() {
             </tr>
 
             <tr>
-              <th style={thStickySmall} className="ag-sticky">Hcp</th>
+              <th style={thStickySmall}>Hcp</th>
 
               {course.parValues.slice(0, 9).map((p, i) => (
                 <th key={`pf-${i}`} style={thMuted}>Par {p}</th>
@@ -613,27 +545,26 @@ export default function GroupScorecard() {
 
               return (
                 <tr key={p.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-                  <td style={tdSticky} className="ag-sticky">
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <td style={{ ...tdSticky, minWidth: compact ? 220 : 260 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 4 : 6 }}>
                       <input
                         defaultValue={p.name}
                         onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
-                        style={inputName}
-                        placeholder="Nombre"
+                        style={{ ...inputName, padding: compact ? "8px 10px" : "10px 10px" }}
                       />
 
-                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <input
                           type="number"
                           defaultValue={p.hcp}
                           onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
-                          style={inputHcp}
+                          style={{ ...inputHcp, width: compact ? 70 : 86, padding: compact ? "7px 10px" : "8px 10px" }}
                         />
                         <span style={{ fontSize: 12, opacity: 0.78, fontWeight: 900 }}>
                           eff {hcpPercent}%: <b>{effHcp}</b>
                         </span>
 
-                        <button onClick={() => removePlayer(p.id)} style={btnDanger} className="ag-hide-shot">
+                        <button onClick={() => removePlayer(p.id)} style={btnDanger}>
                           Quitar
                         </button>
                       </div>
@@ -651,8 +582,13 @@ export default function GroupScorecard() {
                           value={shown}
                           onChange={(e) => onScoreChange(p.id, h, e.target.value)}
                           onBlur={() => onScoreBlur(p.id, h)}
-                          style={{ ...inputScore, ...scoreStyle(cat) }}
-                          className="ag-inputScore"
+                          style={{
+                            ...inputScore,
+                            width: compact ? 38 : 44,
+                            height: compact ? 38 : 44,
+                            borderRadius: compact ? 10 : 12,
+                            ...scoreStyle(cat),
+                          }}
                         />
                       </td>
                     );
@@ -671,8 +607,13 @@ export default function GroupScorecard() {
                           value={shown}
                           onChange={(e) => onScoreChange(p.id, h, e.target.value)}
                           onBlur={() => onScoreBlur(p.id, h)}
-                          style={{ ...inputScore, ...scoreStyle(cat) }}
-                          className="ag-inputScore"
+                          style={{
+                            ...inputScore,
+                            width: compact ? 38 : 44,
+                            height: compact ? 38 : 44,
+                            borderRadius: compact ? 10 : 12,
+                            ...scoreStyle(cat),
+                          }}
                         />
                       </td>
                     );
@@ -689,18 +630,14 @@ export default function GroupScorecard() {
         </table>
       </div>
 
-      <div className="ag-scoreHint">
-        Desliza → para ver hoyos 10–18. Para screenshot: botón “📸 Shot”.
-      </div>
-
       <hr style={hr} />
 
       {/* Matches */}
       <section style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Matches</h2>
-          <div style={{ opacity: 0.7, fontSize: 12 }} className="ag-hide-shot">
-            Bet = 1 monto · Doblada (x2 por segmento) · Mostramos <b>$Total</b>
+          <div style={{ opacity: 0.7, fontSize: 12 }}>
+            Bet = 1 monto · Doblada libre (x2 por segmento) · Solo mostramos <b>$Total</b>
           </div>
         </div>
 
@@ -714,7 +651,6 @@ export default function GroupScorecard() {
                 m={m}
                 onBet={(raw) => setBetAmount(m.a.id, m.b.id, raw)}
                 onDbl={(seg, checked) => toggleDoblada(m.a.id, m.b.id, seg, checked)}
-                screenshotMode={screenshotMode}
               />
             ))}
           </div>
@@ -745,20 +681,16 @@ export default function GroupScorecard() {
                 {moneyRows.map((r) => (
                   <tr key={r.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
                     <td style={tdLeft}><b>{r.name}</b></td>
-                    <td style={td}>{fmtMoneyLib(r.matches)}</td>
-                    <td style={td}>{fmtMoneyLib(r.greens)}</td>
-                    <td style={td}>{fmtMoneyLib(r.bonus)}</td>
+                    <td style={td}>{fmtMoney(r.matches)}</td>
+                    <td style={td}>{fmtMoney(r.greens)}</td>
+                    <td style={td}>{fmtMoney(r.bonus)}</td>
                     <td style={{ ...tdStrong, color: r.total > 0 ? "#16a34a" : r.total < 0 ? "#dc2626" : "#0f172a" }}>
-                      {fmtMoneyLib(r.total)}
+                      {fmtMoney(r.total)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-
-            <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
-              Bonus y Greens son zero-sum dentro del grupo.
-            </div>
           </div>
         )}
       </section>
@@ -766,14 +698,11 @@ export default function GroupScorecard() {
   );
 }
 
-function MatchCard({ m, onBet, onDbl, screenshotMode }) {
+function MatchCard({ m, onBet, onDbl }) {
   const aWins = m.pairRes.total > 0;
   const bWins = m.pairRes.total < 0;
 
-  const accent =
-    aWins ? "#16a34a" :
-    bWins ? "#dc2626" :
-    "#64748b";
+  const accent = aWins ? "#16a34a" : bWins ? "#dc2626" : "#64748b";
 
   return (
     <div style={matchCard}>
@@ -783,42 +712,40 @@ function MatchCard({ m, onBet, onDbl, screenshotMode }) {
             {m.a.name} <span style={{ opacity: 0.55, fontWeight: 900 }}>vs</span> {m.b.name}
           </div>
           <div style={{ marginTop: 6, opacity: 0.72, fontSize: 12 }}>
-            diff HCP: <b>{m.pairRes.diff}</b>
+            diff HCP: <b>{m.pairRes.diff}</b> (matches 100%)
           </div>
         </div>
 
-        {!screenshotMode ? (
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <div style={miniField}>
-              <div style={miniLabel}>Bet</div>
-              <input
-                type="number"
-                defaultValue={m.bet.amount}
-                onBlur={(e) => onBet(e.target.value)}
-                style={miniInput}
-                inputMode="numeric"
-              />
-            </div>
-
-            <label style={checkPill}>
-              <input
-                type="checkbox"
-                checked={!!m.dbl.f9}
-                onChange={(e) => onDbl("f9", e.target.checked)}
-              />
-              <span style={{ fontWeight: 900 }}>Doblada F9</span>
-            </label>
-
-            <label style={checkPill}>
-              <input
-                type="checkbox"
-                checked={!!m.dbl.b9}
-                onChange={(e) => onDbl("b9", e.target.checked)}
-              />
-              <span style={{ fontWeight: 900 }}>Doblada B9</span>
-            </label>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={miniField}>
+            <div style={miniLabel}>Bet</div>
+            <input
+              type="number"
+              defaultValue={m.bet.amount}
+              onBlur={(e) => onBet(e.target.value)}
+              style={miniInput}
+              inputMode="numeric"
+            />
           </div>
-        ) : null}
+
+          <label style={checkPill}>
+            <input
+              type="checkbox"
+              checked={!!m.dbl.f9}
+              onChange={(e) => onDbl("f9", e.target.checked)}
+            />
+            <span style={{ fontWeight: 900 }}>Doblada F9</span>
+          </label>
+
+          <label style={checkPill}>
+            <input
+              type="checkbox"
+              checked={!!m.dbl.b9}
+              onChange={(e) => onDbl("b9", e.target.checked)}
+            />
+            <span style={{ fontWeight: 900 }}>Doblada B9</span>
+          </label>
+        </div>
       </div>
 
       <div style={scoreStripWrap}>
@@ -829,15 +756,15 @@ function MatchCard({ m, onBet, onDbl, screenshotMode }) {
         </div>
 
         <div style={scoreStripBody}>
-          <div style={{ ...scoreStripV, color: accent }}>{fmtMatchLib(m.pairRes.front)}</div>
-          <div style={{ ...scoreStripV, color: accent }}>{fmtMatchLib(m.pairRes.back)}</div>
-          <div style={{ ...scoreStripV, color: accent }}>{fmtMatchLib(m.pairRes.total)}</div>
+          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.front)}</div>
+          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.back)}</div>
+          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.total)}</div>
         </div>
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
         <div style={{ ...moneyPill, borderColor: accent, color: accent }}>
-          {fmtMoneyLib(m.money.moneyTotal)} <span style={{ opacity: 0.7, fontWeight: 900 }}>total</span>
+          {fmtMoney(m.money.moneyTotal)} <span style={{ opacity: 0.7, fontWeight: 900 }}>total</span>
         </div>
       </div>
     </div>
@@ -868,6 +795,17 @@ function scoreStyle(cat) {
   return {};
 }
 
+function fmtMatch(v) {
+  if (v === 0) return "AS";
+  if (v > 0) return `+${v}`;
+  return `${v}`;
+}
+function fmtMoney(n) {
+  const x = Number(n || 0);
+  if (x === 0) return "$0";
+  return x > 0 ? `+$${Math.round(x)}` : `-$${Math.abs(Math.round(x))}`;
+}
+
 // ---------- styles ----------
 const page = {
   padding: 16,
@@ -888,29 +826,10 @@ const header = {
   top: 0,
   zIndex: 15,
   backdropFilter: "blur(10px)",
-  background: "rgba(248,250,252,0.88)",
+  background: "rgba(248,250,252,0.86)",
   paddingBottom: 10,
   paddingTop: 10,
   borderBottom: "1px solid rgba(15,23,42,0.08)",
-};
-
-const badge = {
-  padding: "6px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(59,130,246,0.22)",
-  background: "rgba(59,130,246,0.10)",
-  fontWeight: 950,
-  fontSize: 12,
-};
-
-const badgeMuted = {
-  padding: "6px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(15,23,42,0.12)",
-  background: "rgba(255,255,255,0.7)",
-  fontWeight: 950,
-  fontSize: 12,
-  opacity: 0.9,
 };
 
 const payoutRow = { marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" };
@@ -942,7 +861,6 @@ const card = {
   background: "rgba(255,255,255,0.75)",
   boxShadow: "0 14px 30px rgba(2,6,23,0.07)",
 };
-
 const select = {
   padding: "10px 12px",
   borderRadius: 14,
@@ -968,12 +886,12 @@ const thLeft = { ...th, textAlign: "left" };
 const thMuted = { ...th, opacity: 0.75, fontWeight: 800, fontSize: 12 };
 const thStrong = { ...th, background: "rgba(59,130,246,0.12)" };
 
-const thSticky = { ...th, textAlign: "left", minWidth: 250, background: "rgba(248,250,252,0.95)" };
-const thStickySmall = { ...thMuted, textAlign: "left", background: "rgba(248,250,252,0.95)" };
+const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", background: "rgba(248,250,252,0.95)" };
+const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 2, textAlign: "left", background: "rgba(248,250,252,0.95)" };
 
 const td = { padding: 8, textAlign: "center", background: "rgba(255,255,255,0.55)", color: "#0f172a" };
 const tdLeft = { ...td, textAlign: "left" };
-const tdSticky = { ...td, textAlign: "left", minWidth: 250, background: "rgba(248,250,252,0.92)" };
+const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", background: "rgba(248,250,252,0.92)" };
 const tdStrong = { ...td, fontWeight: 950, background: "rgba(59,130,246,0.10)" };
 const tdMutedCell = { ...td, opacity: 0.95, background: "rgba(15,23,42,0.04)", fontWeight: 950 };
 
@@ -986,7 +904,6 @@ const inputName = {
   color: "#0f172a",
   fontWeight: 950,
 };
-
 const inputHcp = {
   width: 86,
   padding: "8px 10px",
@@ -996,8 +913,9 @@ const inputHcp = {
   color: "#0f172a",
   fontWeight: 900,
 };
-
 const inputScore = {
+  width: 44,
+  height: 44,
   padding: "8px 6px",
   borderRadius: 12,
   border: "1px solid rgba(15,23,42,0.14)",

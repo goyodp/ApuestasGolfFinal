@@ -1,20 +1,8 @@
+// src/screens/GroupScorecard.jsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { doc, onSnapshot, serverTimestamp, updateDoc } from "firebase/firestore";
+import { doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/db";
-
-const COURSES = {
-  "campestre-slp": {
-    name: "Campestre de San Luis",
-    parValues: [4, 3, 4, 4, 4, 4, 5, 3, 5, 5, 3, 4, 4, 4, 3, 4, 4, 5],
-    strokeIndexes: [3, 13, 15, 7, 5, 1, 17, 11, 9, 4, 12, 6, 14, 18, 8, 2, 16, 10],
-  },
-  "la-loma": {
-    name: "La Loma Golf",
-    parValues: [4, 4, 4, 3, 5, 5, 4, 3, 4, 4, 3, 4, 4, 4, 5, 4, 3, 5],
-    strokeIndexes: [11, 3, 13, 17, 7, 5, 1, 15, 9, 2, 18, 10, 16, 4, 8, 14, 12, 6],
-  },
-};
 
 function makePlayerId(existingIds = []) {
   for (let i = 1; i <= 6; i++) {
@@ -24,19 +12,27 @@ function makePlayerId(existingIds = []) {
   return `p${Date.now()}`;
 }
 
+const DEFAULT_STATE = {
+  players: [],
+  scores: {},
+
+  payouts: { birdie: 10, eagle: 20, albatross: 30, greenie: 10 },
+
+  matchBets: {},   // { "p1|p2": {f9,b9,total} }
+  dobladas: {},    // { "p1|p2": {f9By,b9By,totalBy} }
+  greenies: {},    // { "holeIndex": "playerId" }
+
+  createdAt: serverTimestamp(),
+  updatedAt: serverTimestamp(),
+};
+
 export default function GroupScorecard() {
   const { sessionId, groupId } = useParams();
   const navigate = useNavigate();
 
-  const [session, setSession] = useState(null);
-  const [state, setState] = useState(null);
   const [groupMeta, setGroupMeta] = useState(null);
+  const [state, setState] = useState(undefined); // undefined = loading, null = missing, obj = ok
   const [saving, setSaving] = useState(false);
-
-  const sessionRef = useMemo(() => {
-    if (!sessionId) return null;
-    return doc(db, "sessions", sessionId);
-  }, [sessionId]);
 
   const groupRef = useMemo(() => {
     if (!sessionId || !groupId) return null;
@@ -48,16 +44,6 @@ export default function GroupScorecard() {
     return doc(db, "sessions", sessionId, "groups", groupId, "state", "main");
   }, [sessionId, groupId]);
 
-  // 1) Doc principal de la sesión (para courseId)
-  useEffect(() => {
-    if (!sessionRef) return;
-    const unsub = onSnapshot(sessionRef, (snap) => {
-      setSession(snap.exists() ? snap.data() : null);
-    });
-    return () => unsub();
-  }, [sessionRef]);
-
-  // 2) Meta del grupo
   useEffect(() => {
     if (!groupRef) return;
     const unsub = onSnapshot(groupRef, (snap) => {
@@ -66,19 +52,28 @@ export default function GroupScorecard() {
     return () => unsub();
   }, [groupRef]);
 
-  // 3) State editable del grupo
+  // 🔥 Listener + auto init
   useEffect(() => {
     if (!stateRef) return;
-    const unsub = onSnapshot(stateRef, (snap) => {
-      setState(snap.exists() ? snap.data() : null);
+
+    const unsub = onSnapshot(stateRef, async (snap) => {
+      if (snap.exists()) {
+        setState(snap.data());
+        return;
+      }
+
+      // No existe: lo creamos automáticamente
+      try {
+        await setDoc(stateRef, DEFAULT_STATE, { merge: true });
+        // el listener se volverá a disparar con el doc ya creado
+      } catch (e) {
+        console.error(e);
+        setState(null);
+      }
     });
+
     return () => unsub();
   }, [stateRef]);
-
-  const courseId = session?.courseId || "campestre-slp";
-  const course = COURSES[courseId] || COURSES["campestre-slp"];
-  const parValues = course.parValues;
-  const strokeIndexes = course.strokeIndexes;
 
   const players = state?.players || [];
   const scores = state?.scores || {};
@@ -87,10 +82,7 @@ export default function GroupScorecard() {
     if (!stateRef) return;
     setSaving(true);
     try {
-      await updateDoc(stateRef, {
-        ...patch,
-        updatedAt: serverTimestamp(),
-      });
+      await updateDoc(stateRef, { ...patch, updatedAt: serverTimestamp() });
     } finally {
       setSaving(false);
     }
@@ -102,7 +94,6 @@ export default function GroupScorecard() {
       alert("Máximo 6 jugadores por grupo.");
       return;
     }
-
     const existingIds = players.map((p) => p.id);
     const id = makePlayerId(existingIds);
 
@@ -119,7 +110,7 @@ export default function GroupScorecard() {
     const newScores = { ...scores };
     delete newScores[playerId];
 
-    // Limpia greenies si ese player estaba seleccionado
+    // limpia greenies
     const greenies = state.greenies || {};
     const newGreenies = { ...greenies };
     Object.keys(newGreenies).forEach((h) => {
@@ -137,80 +128,49 @@ export default function GroupScorecard() {
 
   const updateScore = async (playerId, holeIndex, value) => {
     if (!state) return;
-
     const arr = Array.isArray(scores[playerId]) ? [...scores[playerId]] : Array(18).fill("");
     arr[holeIndex] = value;
-
-    await patchState({
-      scores: { ...scores, [playerId]: arr },
-    });
+    await patchState({ scores: { ...scores, [playerId]: arr } });
   };
 
   if (!sessionId || !groupId) return <div style={{ padding: 20 }}>Faltan parámetros.</div>;
-  if (!groupMeta || !state || !session) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
+
+  if (!groupMeta || state === undefined) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
+  if (state === null) return <div style={{ padding: 20 }}>No pude crear state/main (revisa reglas).</div>;
 
   return (
-    <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 1100, margin: "0 auto", color: "white" }}>
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <div style={{ flex: 1 }}>
           <h1 style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>
-            {groupMeta.name || groupId}
+            {groupMeta?.name || groupId}
           </h1>
-
-          <div style={{ opacity: 0.85, marginTop: 6 }}>
-            Session: <code>{sessionId}</code> · Group: <code>{groupId}</code> · Campo:{" "}
-            <b>{course.name}</b>
+          <div style={{ opacity: 0.8, marginTop: 6 }}>
+            Session: <code>{sessionId}</code> · Group: <code>{groupId}</code>
             {saving ? <span style={{ marginLeft: 10 }}>Guardando…</span> : null}
           </div>
         </div>
 
-        <button onClick={() => navigate(`/session/${sessionId}`)} style={{ padding: "8px 12px" }}>
+        <button onClick={() => navigate(`/session/${sessionId}`)} style={btn}>
           ← Volver
         </button>
       </div>
 
-      <hr style={{ margin: "18px 0", borderColor: "#2a2a2a" }} />
+      <hr style={hr} />
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={addPlayer} disabled={players.length >= 6} style={btn}>
-          + Agregar jugador ({players.length}/6)
-        </button>
-      </div>
+      <button onClick={addPlayer} disabled={players.length >= 6} style={btnPrimary}>
+        + Agregar jugador ({players.length}/6)
+      </button>
 
       <div style={{ marginTop: 16, overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 980 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 900 }}>
           <thead>
-            {/* Row 1: headers hoyos */}
             <tr>
               <th style={thSticky}>Jugador</th>
               {Array.from({ length: 18 }).map((_, i) => (
-                <th key={i} style={th}>
-                  {i + 1}
-                </th>
+                <th key={i} style={th}>{i + 1}</th>
               ))}
               <th style={th}>Total</th>
-            </tr>
-
-            {/* Row 2: Par */}
-            <tr>
-              <th style={thStickySmall}>Par</th>
-              {parValues.map((p, i) => (
-                <th key={i} style={thMuted}>
-                  {p}
-                </th>
-              ))}
-              <th style={thMuted}></th>
-            </tr>
-
-            {/* Row 3: Ventaja / Stroke Index */}
-            <tr>
-              <th style={thStickySmall}>Ventaja</th>
-              {strokeIndexes.map((si, i) => (
-                <th key={i} style={thMuted}>
-                  {si}
-                </th>
-              ))}
-              <th style={thMuted}></th>
             </tr>
           </thead>
 
@@ -228,7 +188,6 @@ export default function GroupScorecard() {
                         onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
                         style={inputName}
                       />
-
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <input
                           type="number"
@@ -236,8 +195,6 @@ export default function GroupScorecard() {
                           onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
                           style={inputHcp}
                         />
-                        <span style={{ opacity: 0.75, fontWeight: 800 }}>Hcp</span>
-
                         <button onClick={() => removePlayer(p.id)} style={btnDanger}>
                           Quitar
                         </button>
@@ -267,23 +224,21 @@ export default function GroupScorecard() {
   );
 }
 
-/* ---------- styles ---------- */
+const hr = { margin: "18px 0", borderColor: "#2a2a2a" };
 
 const th = {
   textAlign: "center",
   padding: 8,
   background: "#1a1a1a",
   color: "white",
-  fontWeight: 900,
+  fontWeight: 800,
   borderBottom: "1px solid #2a2a2a",
 };
 
-const thMuted = { ...th, opacity: 0.7, fontWeight: 800, fontSize: 12 };
-const thSticky = { ...th, position: "sticky", left: 0, zIndex: 3, textAlign: "left", minWidth: 240 };
-const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 3, textAlign: "left" };
+const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 220 };
 
 const td = { padding: 6, textAlign: "center", background: "#0f0f0f", color: "white" };
-const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 240 };
+const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 220 };
 
 const inputName = {
   width: "100%",
@@ -292,7 +247,7 @@ const inputName = {
   border: "1px solid #2a2a2a",
   background: "#111",
   color: "white",
-  fontWeight: 900,
+  fontWeight: 800,
 };
 
 const inputHcp = {
@@ -302,7 +257,7 @@ const inputHcp = {
   border: "1px solid #2a2a2a",
   background: "#111",
   color: "white",
-  fontWeight: 900,
+  fontWeight: 700,
 };
 
 const inputScore = {
@@ -313,7 +268,7 @@ const inputScore = {
   background: "#111",
   color: "white",
   textAlign: "center",
-  fontWeight: 900,
+  fontWeight: 700,
 };
 
 const btn = {
@@ -326,13 +281,13 @@ const btn = {
   cursor: "pointer",
 };
 
+const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
+
 const btnDanger = {
   padding: "8px 10px",
   borderRadius: 12,
   border: "1px solid #3a1a1a",
   background: "#1a0f0f",
   color: "#ffb4b4",
-  fontWeight: 900,
-  border: "1px solid #3a1a1a",
-  cursor: "pointer",
+  fontWeight: 800,
 };

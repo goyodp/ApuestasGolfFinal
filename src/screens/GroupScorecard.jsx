@@ -755,14 +755,13 @@ function scoreStyle(cat) {
 
 // ---------- styles ----------
 const page = {
-  padding: 16,
-  fontFamily: "system-ui",
-  maxWidth: 1100,
-  margin: "0 auto",
-  color: "#0f172a",
-  background:
-    "radial-gradient(1200px 800px at 20% -20%, rgba(59,130,246,0.14), transparent 55%), radial-gradient(900px 600px at 120% 10%, rgba(34,197,94,0.12), transparent 55%), linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)",
-  minHeight: "100vh",
+  minHeight: "100%",
+  paddingTop: "calc(14px + env(safe-area-inset-top))",
+  paddingBottom: "calc(14px + env(safe-area-inset-bottom))",
+  paddingLeft: "calc(14px + env(safe-area-inset-left))",
+  paddingRight: "calc(14px + env(safe-area-inset-right))",
+  background: "#050505",
+  color: "white",
 };
 
 const header = {

@@ -6,6 +6,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -18,13 +19,11 @@ import { auth } from "../firebase/auth";
 
 import {
   COURSE_DATA,
-  buildHcpAdjustments,
   computeLeaderboards,
   computeMatchResultForPair,
   fmtMatch,
 } from "../lib/compute";
 
-// Courses disponibles (session-level)
 const COURSES = [
   { id: "campestre-slp", label: "Campestre de San Luis" },
   { id: "la-loma", label: "La Loma Golf" },
@@ -36,16 +35,20 @@ export default function Session() {
 
   const [session, setSession] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [groups, setGroups] = useState([]);          // meta: {id, order, name...}
-  const [groupStates, setGroupStates] = useState({}); // { [groupId]: stateMain }
+  const [groups, setGroups] = useState([]);
 
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
 
-  const sessionRef = useMemo(() => (sessionId ? doc(db, "sessions", sessionId) : null), [sessionId]);
+  // Live computed state
+  const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
 
-  // Session main
+  const sessionRef = useMemo(() => {
+    if (!sessionId) return null;
+    return doc(db, "sessions", sessionId);
+  }, [sessionId]);
+
   useEffect(() => {
     if (!sessionRef) return;
     return onSnapshot(sessionRef, (snap) => {
@@ -53,74 +56,43 @@ export default function Session() {
     });
   }, [sessionRef]);
 
-  // Settings
   useEffect(() => {
     if (!sessionId) return;
     const settingsRef = doc(db, "sessions", sessionId, "settings", "main");
     return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
   }, [sessionId]);
 
-  // Groups meta
   useEffect(() => {
     if (!sessionId) return;
     const groupsRef = collection(db, "sessions", sessionId, "groups");
     const q = query(groupsRef, orderBy("order", "asc"));
     return onSnapshot(q, (snap) => {
-      const meta = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setGroups(meta);
+      setGroups(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
   }, [sessionId]);
 
-  // Subscribe to each group state/main (live)
+  // Subscribe to each group's state/main for live leaderboards + matches
   useEffect(() => {
     if (!sessionId) return;
 
     const unsubs = [];
-    const next = {};
+    const map = {};
 
     groups.forEach((g) => {
       const ref = doc(db, "sessions", sessionId, "groups", g.id, "state", "main");
       const unsub = onSnapshot(ref, (snap) => {
-        setGroupStates((prev) => ({
-          ...prev,
-          [g.id]: snap.exists() ? snap.data() : null,
-        }));
+        map[g.id] = snap.exists() ? snap.data() : null;
+        setGroupsStateMap((prev) => ({ ...prev, [g.id]: map[g.id] }));
       });
       unsubs.push(unsub);
-
-      // mantiene keys consistentes (si aún no llega snapshot)
-      if (!(g.id in next)) next[g.id] = groupStates[g.id] ?? null;
     });
 
-    return () => unsubs.forEach((u) => u());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, groups.map((g) => g.id).join("|")]);
+    return () => unsubs.forEach((u) => u && u());
+  }, [sessionId, groups]);
 
-  // Derived session-level config
   const courseId = session?.courseId || "campestre-slp";
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const hcpPercent = session?.hcpPercent ?? 100;
-
-  // Build groupsFull for compute
-  const groupsFull = groups.map((g) => {
-    const st = groupStates[g.id] || {};
-    return {
-      id: g.id,
-      order: g.order || 0,
-      name: g.name || g.id,
-      players: st?.players || [],
-      scores: st?.scores || {},
-      matchBets: st?.matchBets || {},   // por si luego lo metes ahí
-      dobladas: st?.dobladas || {},     // por si luego lo metes ahí
-    };
-  });
-
-  // Live computed leaderboards
-  const computed = computeLeaderboards({
-    groupsFull,
-    courseId,
-    hcpPercent,
-  });
 
   const copySessionId = async () => {
     try {
@@ -159,7 +131,9 @@ export default function Session() {
     if (!sessionId) return;
     setCreatingGroup(true);
     try {
-      const nextOrder = (groups?.length ? Math.max(...groups.map((g) => g.order || 0)) : 0) + 1;
+      const nextOrder =
+        (groups?.length ? Math.max(...groups.map((g) => g.order || 0)) : 0) + 1;
+
       const groupDocId = `group-${nextOrder}`;
 
       await setDoc(doc(db, "sessions", sessionId, "groups", groupDocId), {
@@ -178,7 +152,7 @@ export default function Session() {
     }
   };
 
-  // ---------- HISTORY SNAPSHOT ----------
+  // ---------- History snapshot ----------
   const buildSnapshot = async () => {
     const sessionSnap = await getDoc(doc(db, "sessions", sessionId));
     const sessionData = sessionSnap.exists() ? sessionSnap.data() : {};
@@ -186,34 +160,34 @@ export default function Session() {
     const settingsSnap = await getDoc(doc(db, "sessions", sessionId, "settings", "main"));
     const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
 
-    // Reuse groupsFull already live in UI (pero guardamos lo que haya en Firestore)
-    // Para historia “exacta”, tomamos groupStates actuales (ya están live)
-    const snapGroupsFull = groups.map((g) => {
-      const st = groupStates[g.id] || {};
-      return {
+    const groupsSnap = await getDocs(
+      query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc"))
+    );
+    const groupsMeta = groupsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    const groupsFull = [];
+    for (const g of groupsMeta) {
+      const st = await getDoc(doc(db, "sessions", sessionId, "groups", g.id, "state", "main"));
+      groupsFull.push({
         id: g.id,
-        order: g.order || 0,
         name: g.name || g.id,
-        players: st?.players || [],
-        scores: st?.scores || {},
-        matchBets: st?.matchBets || {},
-        dobladas: st?.dobladas || {},
-        greenies: st?.greenies || {},
-      };
-    });
+        order: g.order || 0,
+        ...(st.exists() ? st.data() : {}),
+      });
+    }
 
     const snapshotCourseId = sessionData?.courseId || "campestre-slp";
     const snapshotHcpPercent = sessionData?.hcpPercent ?? 100;
 
-    const snapComputed = computeLeaderboards({
-      groupsFull: snapGroupsFull,
+    // computed: net + stableford + matches
+    const { stablefordRows, netRows } = computeLeaderboards({
+      groupsFull,
       courseId: snapshotCourseId,
       hcpPercent: snapshotHcpPercent,
     });
 
-    // matches by group (solo marcador F9/B9/T por ahora)
     const matchesByGroup = {};
-    for (const g of snapGroupsFull) {
+    for (const g of groupsFull) {
       const ps = g.players || [];
       const sc = g.scores || {};
       const res = [];
@@ -243,10 +217,10 @@ export default function Session() {
         hcpPercent: snapshotHcpPercent,
       },
       settings: settingsData,
-      groups: snapGroupsFull,
+      groups: groupsFull,
       computed: {
-        leaderboardNet: snapComputed.netRows,
-        leaderboardStableford: snapComputed.stbRows,
+        leaderboardStableford: stablefordRows,
+        leaderboardNet: netRows,
         matchesByGroup,
       },
     };
@@ -271,7 +245,6 @@ export default function Session() {
     }
   };
 
-  // ---------- UI ----------
   if (!sessionId) {
     return (
       <div style={page}>
@@ -284,6 +257,20 @@ export default function Session() {
   if (!session) return <div style={page}>Cargando sesión...</div>;
 
   const courseLabel = (COURSES.find((c) => c.id === courseId)?.label) || courseId;
+
+  // Build groupsFull for compute (from live map)
+  const groupsFull = groups.map((g) => ({
+    id: g.id,
+    name: g.name || g.id,
+    order: g.order || 0,
+    ...(groupsStateMap[g.id] || {}),
+  }));
+
+  const { stablefordRows, netRows } = computeLeaderboards({
+    groupsFull,
+    courseId,
+    hcpPercent,
+  });
 
   return (
     <div style={page}>
@@ -358,29 +345,33 @@ export default function Session() {
       <section style={{ marginBottom: 18 }}>
         <h2 style={{ margin: "0 0 8px 0" }}>Leaderboard (General)</h2>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
           <div style={card}>
             <div style={cardTitle}>Stableford (mejor = mayor)</div>
-            <table style={miniTable}>
-              <thead>
-                <tr>
-                  <th style={miniTh}>#</th>
-                  <th style={miniThLeft}>Jugador</th>
-                  <th style={miniTh}>HCP</th>
-                  <th style={miniTh}>STB</th>
-                </tr>
-              </thead>
-              <tbody>
-                {computed.stbRows.slice(0, 12).map((r, i) => (
-                  <tr key={i}>
-                    <td style={miniTd}>{i + 1}</td>
-                    <td style={miniTdLeft}>{r.name}</td>
-                    <td style={miniTd}>{r.hcp}</td>
-                    <td style={miniTd}><b>{r.stb}</b></td>
+            <div style={{ overflowX: "auto" }}>
+              <table style={miniTable}>
+                <thead>
+                  <tr>
+                    <th style={miniTh}>#</th>
+                    <th style={miniThLeft}>Jugador</th>
+                    <th style={miniTh}>HCP</th>
+                    <th style={miniTh}>STB</th>
+                    <th style={miniTh}>Grupo</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {stablefordRows.slice(0, 20).map((r, i) => (
+                    <tr key={`${r.playerId}-${i}`}>
+                      <td style={miniTd}>{i + 1}</td>
+                      <td style={miniTdLeft}>{r.name}</td>
+                      <td style={miniTd}>{r.hcp}</td>
+                      <td style={miniTd}><b>{r.stableford}</b></td>
+                      <td style={miniTd}>{r.groupId}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
               Empate: gana el HCP menor (sube arriba).
             </div>
@@ -388,26 +379,30 @@ export default function Session() {
 
           <div style={card}>
             <div style={cardTitle}>Net (mejor = menor)</div>
-            <table style={miniTable}>
-              <thead>
-                <tr>
-                  <th style={miniTh}>#</th>
-                  <th style={miniThLeft}>Jugador</th>
-                  <th style={miniTh}>HCP</th>
-                  <th style={miniTh}>Net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {computed.netRows.slice(0, 12).map((r, i) => (
-                  <tr key={i}>
-                    <td style={miniTd}>{i + 1}</td>
-                    <td style={miniTdLeft}>{r.name}</td>
-                    <td style={miniTd}>{r.hcp}</td>
-                    <td style={miniTd}><b>{r.net}</b></td>
+            <div style={{ overflowX: "auto" }}>
+              <table style={miniTable}>
+                <thead>
+                  <tr>
+                    <th style={miniTh}>#</th>
+                    <th style={miniThLeft}>Jugador</th>
+                    <th style={miniTh}>HCP</th>
+                    <th style={miniTh}>Net</th>
+                    <th style={miniTh}>Grupo</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {netRows.slice(0, 20).map((r, i) => (
+                    <tr key={`${r.playerId}-${i}`}>
+                      <td style={miniTd}>{i + 1}</td>
+                      <td style={miniTdLeft}>{r.name}</td>
+                      <td style={miniTd}>{r.hcp}</td>
+                      <td style={miniTd}><b>{r.net}</b></td>
+                      <td style={miniTd}>{r.groupId}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
               Empate: gana el HCP menor (sube arriba).
             </div>
@@ -437,7 +432,7 @@ export default function Session() {
                 group={g}
                 courseId={courseId}
                 hcpPercent={hcpPercent}
-                state={groupStates[g.id]}
+                state={groupsStateMap[g.id]}
                 onOpen={() => navigate(`/session/${sessionId}/group/${g.id}`)}
               />
             ))
@@ -458,7 +453,6 @@ function GroupCard({ group, courseId, hcpPercent, state, onOpen }) {
     for (let j = i + 1; j < players.length; j++) {
       const a = players[i];
       const b = players[j];
-
       const r = computeMatchResultForPair({
         a,
         b,
@@ -466,13 +460,7 @@ function GroupCard({ group, courseId, hcpPercent, state, onOpen }) {
         courseId,
         hcpPercent,
       });
-
-      matches.push({
-        label: r.label,
-        front: r.front,
-        back: r.back,
-        total: r.total,
-      });
+      matches.push(r);
     }
   }
 
@@ -509,13 +497,13 @@ function GroupCard({ group, courseId, hcpPercent, state, onOpen }) {
                     display: "flex",
                     justifyContent: "space-between",
                     gap: 10,
-                    padding: "8px 10px",
+                    padding: "10px 12px",
                     border: "1px solid #2a2a2a",
-                    borderRadius: 12,
+                    borderRadius: 14,
                     background: "#0c0c0c",
                   }}
                 >
-                  <div style={{ fontWeight: 800 }}>{m.label}</div>
+                  <div style={{ fontWeight: 800, minWidth: 140 }}>{m.label}</div>
                   <div style={{ display: "flex", gap: 10, fontWeight: 900, color: c }}>
                     <span>F9 {fmtMatch(m.front)}</span>
                     <span>B9 {fmtMatch(m.back)}</span>
@@ -533,7 +521,7 @@ function GroupCard({ group, courseId, hcpPercent, state, onOpen }) {
 
 // ---------- styles ----------
 const page = {
-  padding: 20,
+  padding: 16,
   fontFamily: "system-ui",
   maxWidth: 1100,
   margin: "0 auto",
@@ -574,7 +562,7 @@ const select = {
   background: "#111",
   color: "white",
   fontWeight: 900,
-  minWidth: 240,
+  minWidth: 220,
 };
 
 const inputSmall = {
@@ -600,13 +588,14 @@ const miniTable = {
   width: "100%",
   borderCollapse: "collapse",
   fontSize: 13,
+  minWidth: 520,
 };
 
 const miniTh = {
   textAlign: "center",
   padding: 8,
   borderBottom: "1px solid #2a2a2a",
-  opacity: 0.8,
+  opacity: 0.85,
 };
 
 const miniThLeft = { ...miniTh, textAlign: "left" };

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Apuestas Golf</string>
+    <string name="title_activity_main">Apuestas Golf</string>
+    <string name="package_name">com.apuestas.golf</string>
+    <string name="custom_url_scheme">com.apuestas.golf</string>
+</resources>

@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "575461986592",
+    "project_id": "golf-scorecard---gdpdv",
+    "storage_bucket": "golf-scorecard---gdpdv.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:575461986592:android:5a15e96a095e3857e80745",
+        "android_client_info": {
+          "package_name": "com.apuestas.golf"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "575461986592-f1agddpi05fvvvoss7ggr46i4su3pdat.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDV2jbbIbf0bQBid1JwLOt3sUopoMn51nw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "575461986592-f1agddpi05fvvvoss7ggr46i4su3pdat.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "575461986592-2a53prl1sq7o9hj7tu4fn04039v04bvj.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.apuestas.golf"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

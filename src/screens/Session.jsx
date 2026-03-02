@@ -31,36 +31,26 @@ const COURSES = Object.entries(COURSE_DATA).map(([id, c]) => ({
   label: c.name || id,
 }));
 
-/* ---------------- Input restrictions ---------------- */
+/* ---------------- tiny utils ---------------- */
 
 function clampInt(n, min, max) {
-  const x = parseInt(String(n ?? "").trim() || "0", 10);
-  if (Number.isNaN(x)) return min;
-  return Math.max(min, Math.min(max, x));
+  const v = Number.isFinite(n) ? n : 0;
+  return Math.max(min, Math.min(max, Math.trunc(v)));
 }
-function clampMoney(n, min, max) {
-  const x = parseInt(String(n ?? "").trim() || "0", 10);
-  if (Number.isNaN(x)) return min;
-  return Math.max(min, Math.min(max, x));
-}
-function sanitizeSignedIntText(raw, { maxAbs = 99 } = {}) {
-  // allows: "", "-", "-12", "12"
-  const s = String(raw ?? "").trim();
-  if (s === "") return "";
-  if (s === "-") return "-";
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    const ok = (ch >= "0" && ch <= "9") || (ch === "-" && i === 0);
-    if (ok) out += ch;
-  }
-  if (out === "-" || out === "") return out;
 
-  const neg = out[0] === "-";
-  const digits = out.replace("-", "");
-  const num = parseInt(digits || "0", 10);
-  const clamped = Math.max(0, Math.min(maxAbs, num));
-  return (neg ? "-" : "") + String(clamped);
+function sanitizeIntInput(raw, { allowNegative = false } = {}) {
+  const s = String(raw ?? "");
+  // Keep only digits (and optional leading -)
+  let out = s.replace(/[^\d-]/g, "");
+  if (!allowNegative) out = out.replace(/-/g, "");
+  // only first leading "-"
+  if (allowNegative) out = out.replace(/(?!^)-/g, "");
+  // collapse multiple leading zeros (but keep "0" or "-0")
+  if (out === "-" || out === "") return out;
+  const sign = out.startsWith("-") ? "-" : "";
+  const digits = out.replace(/-/g, "");
+  const normalized = digits.replace(/^0+(?=\d)/, "");
+  return sign + normalized;
 }
 
 function toast(msg) {
@@ -78,7 +68,7 @@ function toast(msg) {
     border: "1px solid rgba(148,163,184,0.18)",
     fontWeight: 900,
     zIndex: 9999,
-    maxWidth: "90vw",
+    maxWidth: "92vw",
     textAlign: "center",
     boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
   });
@@ -91,10 +81,12 @@ function countFilledScores(scoresObj) {
   let n = 0;
   for (const k of Object.keys(scoresObj)) {
     const arr = Array.isArray(scoresObj[k]) ? scoresObj[k] : [];
-    for (const v of arr) if (String(v || "").trim() !== "") n++;
+    for (const v of arr) if (String(v ?? "").trim() !== "") n++;
   }
   return n;
 }
+
+/* ---------------- main ---------------- */
 
 export default function Session() {
   const { sessionId } = useParams();
@@ -117,13 +109,13 @@ export default function Session() {
   const [openLeaderboards, setOpenLeaderboards] = useState(true);
   const [openGroups, setOpenGroups] = useState(true);
 
-  // Inputs as controlled (prevents weird mobile number behaviors)
-  const [hcpText, setHcpText] = useState("100");
-  const [entryText, setEntryText] = useState("0");
-
   // Cross-group H2H
   const [h2hA, setH2hA] = useState("");
   const [h2hB, setH2hB] = useState("");
+
+  // Leaderboard view
+  const [lbTab, setLbTab] = useState("stb"); // "stb" | "net"
+  const [lbShowAll, setLbShowAll] = useState(false);
 
   const sessionRef = useMemo(() => {
     if (!sessionId) return null;
@@ -174,11 +166,14 @@ export default function Session() {
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
 
-  // keep input texts in sync with live data
-  useEffect(() => setHcpText(String(hcpPercent)), [hcpPercent]);
-  useEffect(() => setEntryText(String(entryFee)), [entryFee]);
-
   const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
+
+  // Controlled drafts (prevents weird input + enforces numeric)
+  const [hcpDraft, setHcpDraft] = useState(String(hcpPercent));
+  const [entryDraft, setEntryDraft] = useState(String(entryFee));
+
+  useEffect(() => setHcpDraft(String(hcpPercent)), [hcpPercent]);
+  useEffect(() => setEntryDraft(String(entryFee)), [entryFee]);
 
   const copySessionId = async () => {
     try {
@@ -221,31 +216,40 @@ export default function Session() {
     }
   };
 
-  const commitHcpPercent = async () => {
+  const commitHcpPercent = async (raw) => {
     if (!sessionRef) return;
-    // only 0..100 allowed
-    const v = clampInt(hcpText, 0, 100);
+    const cleaned = sanitizeIntInput(raw, { allowNegative: false });
+    if (cleaned === "") {
+      setHcpDraft(String(hcpPercent));
+      return;
+    }
+    const v = clampInt(parseInt(cleaned, 10), 0, 100);
+    setHcpDraft(String(v));
     try {
       await updateDoc(sessionRef, { hcpPercent: v, updatedAt: serverTimestamp() });
       toast("%Hcp actualizado ✅");
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar handicap %");
+      setHcpDraft(String(hcpPercent));
     }
   };
 
-  const commitEntryFee = async () => {
+  const commitEntryFee = async (raw) => {
     if (!sessionId) return;
     setSavingEntry(true);
     try {
+      const cleaned = sanitizeIntInput(raw, { allowNegative: false });
+      const v = cleaned === "" ? 0 : Math.max(0, parseInt(cleaned, 10));
+      setEntryDraft(String(v));
       await ensureSettingsDoc();
       const ref = doc(db, "sessions", sessionId, "settings", "main");
-      const v = clampMoney(entryText, 0, 999999);
       await updateDoc(ref, { entryFee: v, updatedAt: serverTimestamp() });
       toast("Entry actualizado ✅");
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar entry fee");
+      setEntryDraft(String(entryFee));
     } finally {
       setSavingEntry(false);
     }
@@ -258,7 +262,7 @@ export default function Session() {
       await ensureSettingsDoc();
       const ref = doc(db, "sessions", sessionId, "settings", "main");
       await updateDoc(ref, { bolaRosaEnabled: !!checked, updatedAt: serverTimestamp() });
-      toast(`Bola Rosa ${checked ? "On" : "Off"} ✅`);
+      toast(`Bola Rosa ${checked ? "ON ✅" : "OFF ✅"}`);
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar Bola Rosa");
@@ -328,7 +332,6 @@ export default function Session() {
       const ps = g.players || [];
       const sc = g.scores || {};
       const res = [];
-
       for (let i = 0; i < ps.length; i++) {
         for (let j = i + 1; j < ps.length; j++) {
           const a = ps[i];
@@ -398,7 +401,7 @@ export default function Session() {
     );
   }
 
-  if (!session) return <div style={page}><div style={loadingCard}>Cargando sesión…</div></div>;
+  if (!session) return <div style={page}>Cargando sesión...</div>;
 
   // groupsFull from live map
   const groupsFull = groups.map((g) => ({
@@ -425,8 +428,6 @@ export default function Session() {
       });
     }
   }
-  // stable list (prevents mobile select weirdness)
-  allPlayers.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
   const pickA = allPlayers.find((x) => x.key === h2hA) || null;
   const pickB = allPlayers.find((x) => x.key === h2hB) || null;
@@ -446,7 +447,8 @@ export default function Session() {
     h2hRes = computeMatchResultForPair({ a, b, scores, courseId });
   }
 
-  const subtitle = `${courseLabel} · %Hcp ${hcpPercent} · ${groups.length} grupos · Pool ${fmtMoney(prizes.pool)}`;
+  const stbToShow = lbShowAll ? stablefordRows : stablefordRows.slice(0, 12);
+  const netToShow = lbShowAll ? netRows : netRows.slice(0, 12);
 
   return (
     <div style={page}>
@@ -458,9 +460,11 @@ export default function Session() {
           ←
         </button>
 
-        <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ minWidth: 0 }}>
           <div style={barTitle}>{session.name || "Sesión"}</div>
-          <div style={barSub}>{subtitle}</div>
+          <div style={barSub}>
+            {courseLabel} · %Hcp {hcpPercent} · {groups.length} grupos
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -477,15 +481,17 @@ export default function Session() {
         {/* Session Settings */}
         <Collapsible
           title="Configuración"
-          subtitle={`Entry ${fmtMoney(entryFee)} · Bola Rosa ${bolaRosaEnabled ? "On" : "Off"}`}
+          subtitle={`Status ${session.status || "live"} · Entry ${fmtMoney(entryFee)} · Bola Rosa ${
+            bolaRosaEnabled ? "On" : "Off"
+          }`}
           open={openSession}
           setOpen={setOpenSession}
         >
           <div style={grid2}>
             <div style={field}>
               <div style={label}>Session ID</div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <code style={codePillRow}>{sessionId}</code>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <code style={codePill}>{sessionId}</code>
                 <button onClick={copySessionId} style={smallBtn}>
                   Copiar
                 </button>
@@ -507,64 +513,100 @@ export default function Session() {
             <div style={field}>
               <div style={label}>% Handicap (Net/STB)</div>
               <input
-                value={hcpText}
-                onChange={(e) => setHcpText(sanitizeSignedIntText(e.target.value, { maxAbs: 100 }))} // 0..100 only effectively
-                onBlur={commitHcpPercent}
+                type="text"
+                value={hcpDraft}
+                onChange={(e) => setHcpDraft(sanitizeIntInput(e.target.value, { allowNegative: false }))}
+                onBlur={() => commitHcpPercent(hcpDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur();
+                  }
+                }}
                 style={inputDark}
                 inputMode="numeric"
+                placeholder="0–100"
               />
-              <div style={hint}>Rango 0–100. Matches siempre 100%.</div>
+              <div style={hint}>Matches siempre 100%.</div>
             </div>
 
             <div style={field}>
               <div style={label}>Entry fee (por jugador)</div>
               <input
-                value={entryText}
-                onChange={(e) => setEntryText(sanitizeSignedIntText(e.target.value, { maxAbs: 999999 }))}
-                onBlur={commitEntryFee}
+                type="text"
+                value={entryDraft}
+                onChange={(e) => setEntryDraft(sanitizeIntInput(e.target.value, { allowNegative: false }))}
+                onBlur={() => commitEntryFee(entryDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur();
+                  }
+                }}
                 style={inputDark}
                 inputMode="numeric"
+                placeholder="0"
               />
               {savingEntry ? <div style={hint}>Guardando…</div> : null}
             </div>
 
+            {/* NEW Pool & Premios (no se ve “vacío” / más compacto y bonito) */}
             <div style={{ ...field, gridColumn: "1 / -1" }}>
               <div style={label}>Pool & Premios</div>
 
-              {/* Not cut on mobile: wrap + scroll-safe */}
-              <div style={poolCard}>
-                <div style={poolLeft}>
-                  <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>Pool</div>
-                  <div style={{ fontSize: 24, fontWeight: 1000, color: "white", marginTop: 4 }}>
-                    {fmtMoney(prizes.pool)}
+              <div style={prizesGrid}>
+                <div style={poolCard}>
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ fontWeight: 950, opacity: 0.85 }}>Pool</div>
+                    <div style={chipTiny}>{prizes.totalPlayers} jugadores</div>
                   </div>
-                  <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
-                    {prizes.totalPlayers} jugadores
+
+                  <div style={poolBig}>${Math.round(prizes.pool)}</div>
+
+                  <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={miniPill}>
+                      <div style={miniPillTop}>STB 1º</div>
+                      <div style={miniPillVal}>
+                        {fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0)}
+                      </div>
+                    </div>
+                    <div style={miniPill}>
+                      <div style={miniPillTop}>STB 2º</div>
+                      <div style={miniPillVal}>
+                        {fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0)}
+                      </div>
+                    </div>
+                    <div style={miniPill}>
+                      <div style={miniPillTop}>Net 1º</div>
+                      <div style={miniPillVal}>
+                        {fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0)}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div style={poolRight}>
-                  <WinnerLine
-                    emoji="🥇"
-                    label="STB 1º"
+                <div style={winnersCard}>
+                  <WinnerRow
+                    badge="🥇"
+                    title="Stableford 1º"
                     name={prizes.winners.stableford1?.name}
+                    sub={prizes.winners.stableford1?.groupId ? `Grupo ${prizes.winners.stableford1.groupId}` : ""}
                     money={prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0}
                   />
-                  <WinnerLine
-                    emoji="🥈"
-                    label="STB 2º"
+                  <div style={sep} />
+                  <WinnerRow
+                    badge="🥈"
+                    title="Stableford 2º"
                     name={prizes.winners.stableford2?.name}
+                    sub={prizes.winners.stableford2?.groupId ? `Grupo ${prizes.winners.stableford2.groupId}` : ""}
                     money={prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0}
                   />
-                  <WinnerLine
-                    emoji="🏆"
-                    label="Net 1º"
+                  <div style={sep} />
+                  <WinnerRow
+                    badge="🏆"
+                    title="Net 1º"
                     name={prizes.winners.net1?.name}
+                    sub="Excluye ganadores STB"
                     money={prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0}
                   />
-                  <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
-                    Net 1º excluye a los dos ganadores de Stableford.
-                  </div>
                 </div>
               </div>
             </div>
@@ -582,29 +624,6 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        {/* Leaderboards */}
-        <Collapsible
-          title="Leaderboards"
-          subtitle="Stableford y Net (General)"
-          open={openLeaderboards}
-          setOpen={setOpenLeaderboards}
-        >
-          <div style={{ display: "grid", gap: 12 }}>
-            <LeaderboardCard
-              title="Stableford"
-              rows={stablefordRows}
-              mode="stb"
-              prizes={prizes}
-            />
-            <LeaderboardCard
-              title="Net"
-              rows={netRows}
-              mode="net"
-              prizes={prizes}
-            />
-          </div>
-        </Collapsible>
-
         {/* H2H */}
         <Collapsible
           title="Head-to-Head (cross-group)"
@@ -613,7 +632,7 @@ export default function Session() {
           setOpen={setOpenH2H}
         >
           <div style={cardDark}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={h2hPickGrid}>
               <div>
                 <div style={label}>Player A</div>
                 <select value={h2hA} onChange={(e) => setH2hA(e.target.value)} style={selectDark}>
@@ -667,6 +686,82 @@ export default function Session() {
           </div>
         </Collapsible>
 
+        {/* Leaderboards (NEW) */}
+        <Collapsible title="Leaderboards" subtitle="General (Stableford / Net)" open={openLeaderboards} setOpen={setOpenLeaderboards}>
+          <div style={cardDark}>
+            <div style={lbTopRow}>
+              <div style={{ minWidth: 0 }}>
+                <div style={lbTitle}>Ranking</div>
+                <div style={lbSub}>Empates: gana el HCP menor.</div>
+              </div>
+
+              <div style={segmented}>
+                <button
+                  style={{ ...segBtn, ...(lbTab === "stb" ? segBtnActive : null) }}
+                  onClick={() => setLbTab("stb")}
+                  type="button"
+                >
+                  STB
+                </button>
+                <button
+                  style={{ ...segBtn, ...(lbTab === "net" ? segBtnActive : null) }}
+                  onClick={() => setLbTab("net")}
+                  type="button"
+                >
+                  Net
+                </button>
+              </div>
+            </div>
+
+            <div style={tableWrap}>
+              <table style={lbTable}>
+                <thead>
+                  <tr>
+                    <th style={lbThRank}>#</th>
+                    <th style={lbThLeft}>Jugador</th>
+                    <th style={lbTh}>HCP</th>
+                    <th style={lbTh}>{lbTab === "stb" ? "STB" : "Net"}</th>
+                    <th style={lbThRight}>Grupo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(lbTab === "stb" ? stbToShow : netToShow).map((r, i) => (
+                    <tr key={`${r.playerKey}-${i}`} style={lbTr}>
+                      <td style={lbTdRank}>
+                        <span style={rankPill(i)}>
+                          {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}
+                        </span>
+                      </td>
+                      <td style={lbTdLeft}>
+                        <div style={nameCell}>
+                          <span style={nameMain}>{r.name}</span>
+                        </div>
+                      </td>
+                      <td style={lbTd}>{r.hcp}</td>
+                      <td style={lbTdVal}>
+                        {lbTab === "stb" ? <b style={{ color: "white" }}>{r.stableford}</b> : <b style={{ color: "white" }}>{r.net}</b>}
+                      </td>
+                      <td style={lbTdRight}>
+                        <span style={groupPill}>G{String(r.groupId || "").replace("group-", "") || "-"}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={lbBottomRow}>
+              <button style={linkBtn} onClick={() => setLbShowAll((s) => !s)} type="button">
+                {lbShowAll ? "Ver menos" : "Ver todos"}
+              </button>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>
+                Mostrando {lbTab === "stb" ? stbToShow.length : netToShow.length} de{" "}
+                {lbTab === "stb" ? stablefordRows.length : netRows.length}
+              </div>
+            </div>
+          </div>
+        </Collapsible>
+
         {/* Groups */}
         <Collapsible
           title="Groups"
@@ -701,12 +796,12 @@ export default function Session() {
   );
 }
 
-/* ---------------- UI components ---------------- */
+/* ---------------- UI helpers ---------------- */
 
 function Collapsible({ title, subtitle, open, setOpen, right, children }) {
   return (
     <section style={section}>
-      <button onClick={() => setOpen(!open)} style={collapsibleHead}>
+      <button onClick={() => setOpen(!open)} style={collapsibleHead} type="button">
         <div style={{ minWidth: 0 }}>
           <div style={sectionTitle}>{title}</div>
           {subtitle ? <div style={subText2}>{subtitle}</div> : null}
@@ -724,25 +819,15 @@ function Collapsible({ title, subtitle, open, setOpen, right, children }) {
 function GroupCard({ group, state, onOpen }) {
   const players = state?.players || [];
   const filled = countFilledScores(state?.scores);
-
-  const pct = (() => {
-    const totalSlots = players.length * 18;
-    if (!totalSlots) return 0;
-    return Math.round((filled / totalSlots) * 100);
-  })();
-
   return (
-    <button style={groupCardBtn} onClick={onOpen}>
+    <button style={groupCardBtn} onClick={onOpen} type="button">
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 1000, fontSize: 16, color: "white" }}>
+          <div style={{ fontWeight: 1000, fontSize: 16, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {group.name || group.id}
           </div>
           <div style={{ marginTop: 6, opacity: 0.78, fontSize: 12 }}>
-            {players.length}/6 jugadores · {filled} scores · {pct}% completo
-          </div>
-          <div style={progressTrack}>
-            <div style={{ ...progressFill, width: `${pct}%` }} />
+            {players.length}/6 jugadores · {filled} scores capturados
           </div>
         </div>
         <div style={openPill}>Abrir</div>
@@ -751,78 +836,38 @@ function GroupCard({ group, state, onOpen }) {
   );
 }
 
-function LeaderboardCard({ title, rows, mode, prizes }) {
-  const topKey =
-    mode === "stb"
-      ? prizes.winners.stableford1?.playerKey
-      : prizes.winners.net1?.playerKey;
-
-  const secondKey = mode === "stb" ? prizes.winners.stableford2?.playerKey : null;
-
+function WinnerRow({ badge, title, name, sub, money }) {
   return (
-    <div style={cardDark}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-        <div style={cardTitle}>{title}</div>
-        <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>
-          {rows?.length || 0} jugadores
+    <div style={winnerRow}>
+      <div style={winnerBadge}>{badge}</div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={winnerTitle}>{title}</div>
+        <div style={winnerName} title={name || "-"}>
+          {name || "-"}
         </div>
+        {sub ? <div style={winnerSub}>{sub}</div> : null}
       </div>
-
-      {/* Fix “cut” on mobile: horizontal scroll + sticky name col */}
-      <div style={tableWrap}>
-        <table style={lbTable}>
-          <thead>
-            <tr>
-              <th style={lbThRank}>#</th>
-              <th style={lbThName}>Jugador</th>
-              <th style={lbTh}>HCP</th>
-              <th style={lbTh}>{mode === "stb" ? "STB" : "NET"}</th>
-              <th style={lbTh}>Grupo</th>
-              <th style={lbTh}>Premio</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(rows || []).slice(0, 60).map((r, i) => {
-              const prize = prizes.payoutsByPlayerKey?.[r.playerKey] || 0;
-              const isFirst = r.playerKey && r.playerKey === topKey;
-              const isSecond = r.playerKey && r.playerKey === secondKey;
-              const badge = isFirst ? "🥇" : isSecond ? "🥈" : "";
-              return (
-                <tr key={`${r.playerKey}-${i}`}>
-                  <td style={lbTdRank}>{i + 1}</td>
-                  <td style={lbTdName}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
-                      {badge ? <span style={{ width: 20 }}>{badge}</span> : <span style={{ width: 20 }} />}
-                      <span style={lbNameText}>{r.name}</span>
-                    </div>
-                  </td>
-                  <td style={lbTd}>{r.hcp}</td>
-                  <td style={lbTdStrong}>{mode === "stb" ? r.stableford : r.net}</td>
-                  <td style={lbTd}>{r.groupId}</td>
-                  <td style={lbTdPrize}>{prize ? fmtMoney(prize) : "—"}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.72 }}>
-        Empates: gana el HCP menor.
-      </div>
+      <div style={winnerMoney}>{fmtMoney(money)}</div>
     </div>
   );
 }
 
-function WinnerLine({ emoji, label, name, money }) {
-  return (
-    <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-      <div style={{ width: 22 }}>{emoji}</div>
-      <div style={{ fontWeight: 900, opacity: 0.9 }}>{label}:</div>
-      <div style={{ fontWeight: 950, color: "white" }}>{name || "-"}</div>
-      <div style={{ opacity: 0.75 }}>{fmtMoney(money)}</div>
-    </div>
-  );
+function rankPill(i) {
+  const isTop = i <= 2;
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 26,
+    minWidth: 34,
+    padding: "0 8px",
+    borderRadius: 999,
+    border: isTop ? "1px solid rgba(59,130,246,0.35)" : "1px solid rgba(148,163,184,0.14)",
+    background: isTop ? "rgba(59,130,246,0.14)" : "rgba(2,6,23,0.30)",
+    color: "white",
+    fontWeight: 950,
+    fontSize: 12,
+  };
 }
 
 /* ---------------- Styles (premium dark, mobile-first) ---------------- */
@@ -830,15 +875,14 @@ function WinnerLine({ emoji, label, name, money }) {
 const baseCss = `
   * { box-sizing: border-box; }
   input, button, select { font: inherit; }
-  button { -webkit-tap-highlight-color: transparent; }
+  button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
   input:focus, select:focus { outline: none; }
   table { border-spacing: 0; }
 `;
 
 const page = {
   minHeight: "100%",
-  background:
-    "radial-gradient(1200px 700px at 10% 0%, rgba(59,130,246,0.10) 0%, rgba(0,0,0,0) 45%), #05070b",
+  background: "radial-gradient(1200px 700px at 10% 0%, rgba(59,130,246,0.10) 0%, rgba(0,0,0,0) 45%), #05070b",
   color: "#e5e7eb",
   paddingTop: "env(safe-area-inset-top)",
   paddingBottom: "env(safe-area-inset-bottom)",
@@ -880,7 +924,7 @@ const barTitle = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
-  maxWidth: 240,
+  maxWidth: 220,
 };
 
 const barSub = {
@@ -890,7 +934,7 @@ const barSub = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
-  maxWidth: 420,
+  maxWidth: 260,
 };
 
 const chipBtn = {
@@ -938,12 +982,7 @@ const sectionTitle = { fontSize: 14, fontWeight: 1000, letterSpacing: -0.2, colo
 const subText2 = { marginTop: 2, fontSize: 12, opacity: 0.72 };
 const chev = { fontSize: 18, opacity: 0.8, fontWeight: 900 };
 
-const grid2 = {
-  display: "grid",
-  gridTemplateColumns: "1fr",
-  gap: 12,
-};
-
+const grid2 = { display: "grid", gridTemplateColumns: "1fr", gap: 12 };
 const field = { display: "flex", flexDirection: "column", gap: 8 };
 
 const label = { fontWeight: 950, color: "white" };
@@ -966,10 +1005,10 @@ const inputDark = {
   background: "rgba(15,23,42,0.55)",
   color: "white",
   fontWeight: 950,
-  width: 160,
+  width: 140,
 };
 
-const codePillRow = {
+const codePill = {
   padding: "10px 12px",
   borderRadius: 14,
   border: "1px solid rgba(148,163,184,0.14)",
@@ -1007,30 +1046,6 @@ const cardDark = {
   padding: 12,
 };
 
-const cardTitle = { fontWeight: 950, marginBottom: 10, fontSize: 14, color: "white" };
-
-const poolCard = {
-  display: "grid",
-  gridTemplateColumns: "minmax(160px, 240px) 1fr",
-  gap: 12,
-  borderRadius: 16,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.35)",
-  padding: 12,
-};
-
-const poolLeft = {
-  borderRadius: 16,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(2,6,23,0.35)",
-  padding: 12,
-  minWidth: 0,
-};
-
-const poolRight = {
-  minWidth: 0,
-};
-
 const togglePill = {
   display: "flex",
   gap: 12,
@@ -1044,117 +1059,205 @@ const togglePill = {
 
 const tableWrap = { overflowX: "auto", WebkitOverflowScrolling: "touch" };
 
-/* Leaderboard table: sticky name col + not cut */
-const lbTable = {
-  width: "100%",
-  minWidth: 720,
-  borderCollapse: "separate",
-  borderSpacing: 0,
+/* ----- NEW prizes layout ----- */
+
+const prizesGrid = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: 12,
 };
 
-const lbThBase = {
-  padding: 10,
-  fontSize: 12,
-  fontWeight: 950,
-  opacity: 0.85,
-  borderBottom: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(2,6,23,0.35)",
-  whiteSpace: "nowrap",
-  textAlign: "center",
+const poolCard = {
+  borderRadius: 18,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "linear-gradient(180deg, rgba(59,130,246,0.14) 0%, rgba(2,6,23,0.35) 55%)",
+  padding: 14,
 };
 
-const lbThRank = { ...lbThBase, width: 52 };
-const lbTh = { ...lbThBase };
-
-const lbThName = {
-  ...lbThBase,
-  position: "sticky",
-  left: 0,
-  zIndex: 2,
-  textAlign: "left",
-  minWidth: 240,
-  background: "rgba(2,6,23,0.72)",
-  backdropFilter: "blur(10px)",
-};
-
-const lbTdBase = {
-  padding: 10,
-  borderBottom: "1px solid rgba(148,163,184,0.08)",
-  background: "rgba(15,23,42,0.15)",
-  whiteSpace: "nowrap",
-  textAlign: "center",
-};
-
-const lbTdRank = { ...lbTdBase, width: 52, opacity: 0.85 };
-
-const lbTd = { ...lbTdBase, opacity: 0.95 };
-
-const lbTdStrong = {
-  ...lbTdBase,
-  fontWeight: 1000,
-  color: "white",
-  background: "rgba(59,130,246,0.08)",
-};
-
-const lbTdPrize = {
-  ...lbTdBase,
-  fontWeight: 1000,
-  color: "#dbeafe",
-  background: "rgba(59,130,246,0.06)",
-};
-
-const lbTdName = {
-  ...lbTdBase,
-  position: "sticky",
-  left: 0,
-  zIndex: 1,
-  textAlign: "left",
-  minWidth: 240,
-  background: "rgba(2,6,23,0.78)",
-  backdropFilter: "blur(10px)",
-};
-
-const lbNameText = {
-  minWidth: 0,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-  fontWeight: 950,
-  color: "white",
-};
-
-const groupCardBtn = {
-  width: "100%",
+const winnersCard = {
   borderRadius: 18,
   border: "1px solid rgba(148,163,184,0.14)",
   background: "rgba(2,6,23,0.35)",
-  padding: 12,
-  textAlign: "left",
+  padding: 14,
 };
 
-const openPill = {
-  padding: "8px 10px",
+const chipTiny = {
+  padding: "6px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(59,130,246,0.35)",
-  background: "rgba(59,130,246,0.18)",
-  color: "#dbeafe",
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  fontWeight: 900,
+  fontSize: 12,
+  opacity: 0.9,
+};
+
+const poolBig = {
+  marginTop: 10,
+  fontSize: 36,
+  fontWeight: 1000,
+  letterSpacing: -1,
+  color: "white",
+  lineHeight: 1.05,
+};
+
+const miniPill = {
+  flex: "1 1 110px",
+  borderRadius: 16,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.45)",
+  padding: 10,
+  minWidth: 110,
+};
+
+const miniPillTop = { fontSize: 12, opacity: 0.75, fontWeight: 900 };
+const miniPillVal = { marginTop: 4, fontWeight: 1000, color: "white" };
+
+const winnerRow = { display: "flex", gap: 12, alignItems: "center" };
+const winnerBadge = {
+  width: 40,
+  height: 40,
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.45)",
+  display: "grid",
+  placeItems: "center",
+  fontSize: 18,
+};
+
+const winnerTitle = { fontWeight: 950, opacity: 0.9, fontSize: 12 };
+const winnerName = {
+  marginTop: 2,
+  fontWeight: 1000,
+  color: "white",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  maxWidth: "52vw",
+};
+const winnerSub = { marginTop: 3, fontSize: 12, opacity: 0.72 };
+const winnerMoney = { fontWeight: 1000, color: "white", marginLeft: "auto", whiteSpace: "nowrap" };
+
+const sep = {
+  height: 1,
+  background: "rgba(148,163,184,0.12)",
+  margin: "12px 0",
+};
+
+/* ----- NEW leaderboards layout ----- */
+
+const lbTopRow = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const lbTitle = { fontWeight: 1000, color: "white", fontSize: 14 };
+const lbSub = { marginTop: 3, fontSize: 12, opacity: 0.72 };
+
+const segmented = {
+  display: "flex",
+  borderRadius: 999,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.25)",
+  padding: 4,
+  gap: 4,
+};
+
+const segBtn = {
+  padding: "8px 12px",
+  borderRadius: 999,
+  border: "1px solid transparent",
+  background: "transparent",
+  color: "rgba(226,232,240,0.88)",
   fontWeight: 950,
 };
 
-const progressTrack = {
-  marginTop: 8,
-  height: 8,
-  borderRadius: 999,
-  background: "rgba(148,163,184,0.12)",
-  overflow: "hidden",
+const segBtnActive = {
+  border: "1px solid rgba(59,130,246,0.35)",
+  background: "rgba(59,130,246,0.18)",
+  color: "white",
 };
 
-const progressFill = {
-  height: "100%",
-  borderRadius: 999,
-  background: "linear-gradient(90deg, rgba(59,130,246,0.65), rgba(34,197,94,0.55))",
+const lbTable = {
+  width: "100%",
+  borderCollapse: "separate",
+  borderSpacing: 0,
+  fontSize: 13,
+  minWidth: 420,
 };
 
+const lbThBase = {
+  padding: "10px 10px",
+  borderBottom: "1px solid rgba(148,163,184,0.14)",
+  opacity: 0.85,
+  whiteSpace: "nowrap",
+  fontWeight: 900,
+  fontSize: 12,
+  background: "rgba(15,23,42,0.35)",
+  position: "sticky",
+  top: 0,
+  zIndex: 1,
+};
+
+const lbThRank = { ...lbThBase, textAlign: "center", width: 56 };
+const lbThLeft = { ...lbThBase, textAlign: "left" };
+const lbTh = { ...lbThBase, textAlign: "center", width: 70 };
+const lbThRight = { ...lbThBase, textAlign: "right", width: 84 };
+
+const lbTr = { background: "rgba(2,6,23,0.20)" };
+
+const lbTdBase = {
+  padding: "10px 10px",
+  borderBottom: "1px solid rgba(148,163,184,0.08)",
+  whiteSpace: "nowrap",
+  verticalAlign: "middle",
+};
+
+const lbTdRank = { ...lbTdBase, textAlign: "center" };
+const lbTdLeft = { ...lbTdBase, textAlign: "left", minWidth: 160 };
+const lbTd = { ...lbTdBase, textAlign: "center", opacity: 0.95 };
+const lbTdVal = { ...lbTdBase, textAlign: "center" };
+const lbTdRight = { ...lbTdBase, textAlign: "right" };
+
+const nameCell = { display: "flex", alignItems: "center", gap: 8, minWidth: 0 };
+const nameMain = { fontWeight: 950, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+
+const groupPill = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: 26,
+  padding: "0 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.30)",
+  fontWeight: 900,
+  fontSize: 12,
+  color: "rgba(226,232,240,0.92)",
+};
+
+const lbBottomRow = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 10,
+  marginTop: 10,
+  flexWrap: "wrap",
+};
+
+const linkBtn = {
+  border: "none",
+  background: "transparent",
+  color: "#dbeafe",
+  fontWeight: 950,
+  padding: 0,
+  textDecoration: "underline",
+  textUnderlineOffset: 3,
+};
+
+const h2hPickGrid = { display: "grid", gridTemplateColumns: "1fr", gap: 10 };
 const h2hStrip = {
   padding: 12,
   borderRadius: 16,
@@ -1186,13 +1289,21 @@ const h2hVal = (v) => ({
   color: v > 0 ? "#22c55e" : v < 0 ? "#ef4444" : "#e5e7eb",
 });
 
-const loadingCard = {
-  margin: 14,
-  padding: 14,
+const groupCardBtn = {
+  width: "100%",
   borderRadius: 18,
   border: "1px solid rgba(148,163,184,0.14)",
   background: "rgba(2,6,23,0.35)",
-  color: "white",
+  padding: 12,
+  textAlign: "left",
+};
+
+const openPill = {
+  padding: "8px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(59,130,246,0.35)",
+  background: "rgba(59,130,246,0.18)",
+  color: "#dbeafe",
   fontWeight: 950,
 };
 
@@ -1212,3 +1323,13 @@ const btn = {
   color: "white",
   fontWeight: 900,
 };
+
+/* ---- responsive tweaks ---- */
+if (typeof window !== "undefined") {
+  const mq = window.matchMedia?.("(min-width: 860px)");
+  // no-op if not available
+  if (mq?.matches) {
+    prizesGrid.gridTemplateColumns = "1.1fr 0.9fr";
+    h2hPickGrid.gridTemplateColumns = "1fr 1fr";
+  }
+}

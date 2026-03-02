@@ -70,9 +70,10 @@ export default function Home() {
 
       const newSessionId = sessionRef.id;
 
-      // global settings/main: SOLO entryFee (lo demás es por grupo)
+      // settings/main: entryFee + bolaRosaEnabled (globales)
       await setDoc(doc(db, "sessions", newSessionId, "settings", "main"), {
         entryFee: 0,
+        bolaRosaEnabled: false,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -107,7 +108,6 @@ export default function Home() {
       const t = await navigator.clipboard.readText();
       if (t) setJoinId(t.trim());
     } catch {
-      // iOS/Safari a veces bloquea, no pasa nada
       alert("No pude leer el clipboard. Pega manual.");
     }
   };
@@ -123,9 +123,7 @@ export default function Home() {
       <div style={topBar}>
         <div>
           <div style={brandTitle}>Apuestas Golf</div>
-          <div style={brandSub}>
-            Sesiones compartidas · Grupos · Matches · Greens
-          </div>
+          <div style={brandSub}>Sesiones compartidas · Grupos · Matches · Greens</div>
         </div>
 
         {user ? (
@@ -165,10 +163,26 @@ export default function Home() {
                 )}
 
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 900, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <div
+                    style={{
+                      fontWeight: 900,
+                      fontSize: 16,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
                     {user.displayName || "Usuario"}
                   </div>
-                  <div style={{ fontSize: 12, opacity: 0.7, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      opacity: 0.7,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
                     {user.email}
                   </div>
                 </div>
@@ -208,10 +222,7 @@ export default function Home() {
                 <button onClick={joinSession} style={btnPrimary}>
                   🚀 Entrar
                 </button>
-                <button
-                  onClick={() => setJoinId("")}
-                  style={btnGhost}
-                >
+                <button onClick={() => setJoinId("")} style={btnGhost}>
                   Limpiar
                 </button>
               </div>
@@ -252,8 +263,8 @@ export default function Home() {
           <div style={{ ...card, marginTop: 14 }}>
             <div style={cardTitle}>Tip rápido</div>
             <div style={{ opacity: 0.85, lineHeight: 1.4 }}>
-              Para compartir: entra a la sesión → “Copiar Session ID” → lo mandas por WhatsApp.
-              En móvil, con “Pegar” y “Entrar” queda en 2 taps.
+              Para compartir: entra a la sesión → “Copiar Session ID” → lo mandas por WhatsApp. En móvil,
+              con “Pegar” y “Entrar” queda en 2 taps.
             </div>
           </div>
         </>

@@ -9,7 +9,13 @@ import {
   sumNet9,
   sumGross9,
   sumStableford9,
+  pairKey,
   scoreCategory,
+  computeMatchResultForPair,
+  calcMatchMoneyForPair,
+  computeBonusMoneyByPlayer,
+  computeGreensMoneyByPlayer,
+  computeMatchesMoneyByPlayer,
 } from "../lib/compute";
 
 function makePlayerId(existingIds = []) {
@@ -24,18 +30,26 @@ const DEFAULT_GROUP_SETTINGS = {
   birdiePay: 10,
   eaglePay: 20,
   albatrossPay: 30,
-  greeniePay: 10,
-  greenieLabel: "Greenie",
+  greensPay: 10, // fixed tag "Greens"
 };
 
 const DEFAULT_STATE = {
   players: [],
   scores: {},
-  // Per-group settings & bets
+
+  // Per-group settings
   groupSettings: { ...DEFAULT_GROUP_SETTINGS },
-  matchBets: {},  // { "p1|p2": { f9: 50, b9: 50, total: 50 } }
-  dobladas: {},   // { "p1|p2": { f9By: "p2" } ... } (si luego lo activas)
-  greenies: {},   // { "holeNumber": "playerId" }
+
+  // Per-pair bets: { "p1|p2": { f9: 50, b9: 50, total: 50 } }
+  matchBets: {},
+
+  // Per-pair dobladas: { "p1|p2": { f9: false, b9: false } }
+  // We interpret checkbox as "doblada requested by current loser"
+  dobladas: {},
+
+  // Greens winners per par-3 hole number (1..18): { "3": "p2" }
+  greens: {},
+
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
 };
@@ -45,11 +59,11 @@ export default function GroupScorecard() {
   const navigate = useNavigate();
 
   const [groupMeta, setGroupMeta] = useState(null);
-  const [settings, setSettings] = useState(null); // global (courseId + hcpPercent + entryFee)
-  const [state, setState] = useState(undefined); // undefined=loading, null=error, obj=ok
+  const [settings, setSettings] = useState(null); // global settings/main
+  const [state, setState] = useState(undefined);
   const [saving, setSaving] = useState(false);
 
-  // local editing for score inputs (so color updates immediately without flicker)
+  // local score editing so color updates instantly
   const [editingScores, setEditingScores] = useState({}); // { [playerId]: { [holeIndex]: "value" } }
 
   const settingsRef = useMemo(() => {
@@ -77,23 +91,43 @@ export default function GroupScorecard() {
     return onSnapshot(groupRef, (snap) => setGroupMeta(snap.exists() ? snap.data() : null));
   }, [groupRef]);
 
-  // Listener + auto init
   useEffect(() => {
     if (!stateRef) return;
 
     const unsub = onSnapshot(stateRef, async (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        // ensure defaults for new fields
-        if (!data.groupSettings) {
+
+        // migration defaults
+        const gs = data.groupSettings || {};
+        const nextGs = {
+          ...DEFAULT_GROUP_SETTINGS,
+          ...gs,
+        };
+
+        const needsPatch =
+          !data.groupSettings ||
+          nextGs.birdiePay !== gs.birdiePay ||
+          nextGs.eaglePay !== gs.eaglePay ||
+          nextGs.albatrossPay !== gs.albatrossPay ||
+          nextGs.greensPay !== gs.greensPay ||
+          !data.greens;
+
+        if (needsPatch) {
           try {
             await updateDoc(stateRef, {
-              groupSettings: { ...DEFAULT_GROUP_SETTINGS },
+              groupSettings: nextGs,
+              greens: data.greens || data.greenies || {},
               updatedAt: serverTimestamp(),
             });
           } catch {}
         }
-        setState(data);
+
+        setState({
+          ...data,
+          groupSettings: nextGs,
+          greens: data.greens || data.greenies || {},
+        });
         return;
       }
 
@@ -115,6 +149,17 @@ export default function GroupScorecard() {
   const players = state?.players || [];
   const scores = state?.scores || {};
   const groupSettings = state?.groupSettings || DEFAULT_GROUP_SETTINGS;
+  const matchBets = state?.matchBets || {};
+  const dobladas = state?.dobladas || {};
+  const greens = state?.greens || {};
+
+  const par3Holes = useMemo(() => {
+    const out = [];
+    for (let i = 0; i < course.parValues.length; i++) {
+      if (course.parValues[i] === 3) out.push(i + 1); // hole number 1..18
+    }
+    return out;
+  }, [course.parValues]);
 
   const patchState = async (patch) => {
     if (!stateRef) return;
@@ -128,10 +173,8 @@ export default function GroupScorecard() {
 
   const addPlayer = async () => {
     if (!state) return;
-    if (players.length >= 6) {
-      alert("Máximo 6 jugadores por grupo.");
-      return;
-    }
+    if (players.length >= 6) return alert("Máximo 6 jugadores por grupo.");
+
     const existingIds = players.map((p) => p.id);
     const id = makePlayerId(existingIds);
 
@@ -148,23 +191,27 @@ export default function GroupScorecard() {
     const newScores = { ...scores };
     delete newScores[playerId];
 
-    const greenies = state.greenies || {};
-    const newGreenies = { ...greenies };
-    Object.keys(newGreenies).forEach((h) => {
-      if (newGreenies[h] === playerId) delete newGreenies[h];
+    const newGreens = { ...greens };
+    Object.keys(newGreens).forEach((h) => {
+      if (newGreens[h] === playerId) delete newGreens[h];
     });
 
-    // also remove bets keys containing player (optional cleanup)
-    const newMatchBets = { ...(state.matchBets || {}) };
+    const newMatchBets = { ...matchBets };
     Object.keys(newMatchBets).forEach((k) => {
       if (k.split("|").includes(playerId)) delete newMatchBets[k];
+    });
+
+    const newDobladas = { ...dobladas };
+    Object.keys(newDobladas).forEach((k) => {
+      if (k.split("|").includes(playerId)) delete newDobladas[k];
     });
 
     await patchState({
       players: newPlayers,
       scores: newScores,
-      greenies: newGreenies,
+      greens: newGreens,
       matchBets: newMatchBets,
+      dobladas: newDobladas,
     });
   };
 
@@ -204,15 +251,100 @@ export default function GroupScorecard() {
   };
 
   const updateGroupSetting = async (field, raw) => {
-    const value = field === "greenieLabel" ? String(raw || "") : Math.max(0, parseInt(raw || "0", 10));
-    await patchState({
-      groupSettings: { ...groupSettings, [field]: value },
-    });
+    const value = Math.max(0, parseInt(raw || "0", 10));
+    await patchState({ groupSettings: { ...groupSettings, [field]: value } });
+  };
+
+  const setGreenWinner = async (holeNumber, playerIdOrEmpty) => {
+    const next = { ...greens };
+    if (!playerIdOrEmpty) delete next[String(holeNumber)];
+    else next[String(holeNumber)] = playerIdOrEmpty;
+    await patchState({ greens: next });
+  };
+
+  const setBet = async (aId, bId, field, raw) => {
+    const key = pairKey(aId, bId);
+    const n = Math.max(0, parseInt(raw || "0", 10));
+    const prev = matchBets[key] || { f9: 0, b9: 0, total: 0 };
+    await patchState({ matchBets: { ...matchBets, [key]: { ...prev, [field]: n } } });
+  };
+
+  const toggleDoblada = async (aId, bId, seg, checked) => {
+    const key = pairKey(aId, bId);
+    const prev = dobladas[key] || { f9: false, b9: false };
+    await patchState({ dobladas: { ...dobladas, [key]: { ...prev, [seg]: !!checked } } });
   };
 
   if (!sessionId || !groupId) return <div style={{ padding: 20 }}>Faltan parámetros.</div>;
   if (!groupMeta || state === undefined || !settings) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
   if (state === null) return <div style={{ padding: 20 }}>No pude crear state/main (revisa reglas).</div>;
+
+  // ===== Compute money inside group =====
+  const bonusByPlayer = computeBonusMoneyByPlayer({
+    players,
+    scores,
+    parValues: course.parValues,
+    groupSettings,
+  });
+
+  const greensByPlayer = computeGreensMoneyByPlayer({
+    players,
+    greens,
+    greensPay: groupSettings.greensPay ?? 0,
+  });
+
+  const matchesByPlayer = computeMatchesMoneyByPlayer({
+    players,
+    scores,
+    courseId,
+    hcpPercent,
+    matchBets,
+    dobladas,
+  });
+
+  const moneyRows = players.map((p) => {
+    const bonus = bonusByPlayer[p.id] || 0;
+    const g = greensByPlayer[p.id] || 0;
+    const m = matchesByPlayer[p.id] || 0;
+    return {
+      id: p.id,
+      name: p.name || p.id,
+      matches: m,
+      greens: g,
+      bonus,
+      total: m + g + bonus,
+    };
+  });
+
+  // ===== Build matches list for UI =====
+  const matchesList = [];
+  for (let i = 0; i < players.length; i++) {
+    for (let j = i + 1; j < players.length; j++) {
+      const a = players[i];
+      const b = players[j];
+      const key = pairKey(a.id, b.id);
+      const bet = matchBets[key] || { f9: 0, b9: 0, total: 0 };
+      const dbl = dobladas[key] || { f9: false, b9: false };
+
+      const pairRes = computeMatchResultForPair({
+        a,
+        b,
+        scores,
+        courseId,
+        hcpPercent,
+      });
+
+      const money = calcMatchMoneyForPair({
+        pairResult: pairRes,
+        aId: a.id,
+        bId: b.id,
+        matchBetsForPair: bet,
+        dobladasForPair: dbl,
+      });
+
+      matchesList.push({ key, a, b, pairRes, bet, dbl, money });
+    }
+  }
 
   return (
     <div style={page}>
@@ -228,31 +360,10 @@ export default function GroupScorecard() {
 
           {/* Per-group payouts */}
           <div style={payoutRow}>
-            <PayoutInput
-              label="Birdie"
-              value={groupSettings.birdiePay ?? 0}
-              onBlur={(v) => updateGroupSetting("birdiePay", v)}
-            />
-            <PayoutInput
-              label="Eagle"
-              value={groupSettings.eaglePay ?? 0}
-              onBlur={(v) => updateGroupSetting("eaglePay", v)}
-            />
-            <PayoutInput
-              label="Albatross/HIO"
-              value={groupSettings.albatrossPay ?? 0}
-              onBlur={(v) => updateGroupSetting("albatrossPay", v)}
-            />
-            <PayoutInput
-              label={groupSettings.greenieLabel || "Greenie"}
-              value={groupSettings.greeniePay ?? 0}
-              onBlur={(v) => updateGroupSetting("greeniePay", v)}
-            />
-            <PayoutText
-              label="Tag"
-              value={groupSettings.greenieLabel || "Greenie"}
-              onBlur={(v) => updateGroupSetting("greenieLabel", v)}
-            />
+            <PayoutInput label="Birdie" value={groupSettings.birdiePay ?? 0} onBlur={(v) => updateGroupSetting("birdiePay", v)} />
+            <PayoutInput label="Eagle" value={groupSettings.eaglePay ?? 0} onBlur={(v) => updateGroupSetting("eaglePay", v)} />
+            <PayoutInput label="Albatross/HIO" value={groupSettings.albatrossPay ?? 0} onBlur={(v) => updateGroupSetting("albatrossPay", v)} />
+            <PayoutInput label="Greens" value={groupSettings.greensPay ?? 0} onBlur={(v) => updateGroupSetting("greensPay", v)} />
           </div>
         </div>
 
@@ -263,10 +374,44 @@ export default function GroupScorecard() {
 
       <hr style={hr} />
 
+      {/* Greens section */}
+      <section style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: "0 0 8px 0" }}>Greens (Par 3)</h2>
+        {players.length < 2 ? (
+          <div style={{ opacity: 0.7 }}>Agrega jugadores para seleccionar ganadores.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+            {par3Holes.map((holeNumber) => (
+              <div key={holeNumber} style={card}>
+                <div style={{ fontWeight: 900, marginBottom: 8 }}>
+                  Hoyo {holeNumber} (Par 3)
+                </div>
+                <select
+                  value={greens[String(holeNumber)] || ""}
+                  onChange={(e) => setGreenWinner(holeNumber, e.target.value)}
+                  style={select}
+                >
+                  <option value="">— Sin ganador —</option>
+                  {players.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+                  El ganador cobra <b>${groupSettings.greensPay}</b> a cada jugador del grupo.
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <hr style={hr} />
+
       <button onClick={addPlayer} disabled={players.length >= 6} style={btnPrimary}>
         + Agregar jugador ({players.length}/6)
       </button>
 
+      {/* Score table */}
       <div style={{ marginTop: 14, overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 1100 }}>
           <thead>
@@ -346,7 +491,6 @@ export default function GroupScorecard() {
                     </div>
                   </td>
 
-                  {/* Front 9 holes */}
                   {Array.from({ length: 9 }).map((_, h) => {
                     const shown =
                       editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : (arr[h] ?? "");
@@ -365,7 +509,6 @@ export default function GroupScorecard() {
                   })}
                   <td style={tdStrong}>{grossF9 || ""}</td>
 
-                  {/* Back 9 holes */}
                   {Array.from({ length: 9 }).map((_, i) => {
                     const h = i + 9;
                     const shown =
@@ -394,6 +537,143 @@ export default function GroupScorecard() {
           </tbody>
         </table>
       </div>
+
+      <hr style={hr} />
+
+      {/* Matches */}
+      <section style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: "0 0 8px 0" }}>Matches (por pareja)</h2>
+
+        {players.length < 2 ? (
+          <div style={{ opacity: 0.7 }}>Agrega al menos 2 jugadores.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 980 }}>
+              <thead>
+                <tr>
+                  <th style={thLeft}>Match</th>
+                  <th style={th}>Bet F9</th>
+                  <th style={th}>Doblada F9</th>
+                  <th style={th}>Bet B9</th>
+                  <th style={th}>Doblada B9</th>
+                  <th style={th}>Bet Total</th>
+                  <th style={th}>F9</th>
+                  <th style={th}>B9</th>
+                  <th style={th}>Total</th>
+                  <th style={th}>Money (A)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matchesList.map((m) => {
+                  const aWins = m.pairRes.total > 0;
+                  const bWins = m.pairRes.total < 0;
+                  const color = aWins ? "#86efac" : bWins ? "#fca5a5" : "#d4d4d4";
+
+                  return (
+                    <tr key={m.key} style={{ borderTop: "1px solid #222" }}>
+                      <td style={tdLeft}>
+                        <b>{m.a.name}</b> vs <b>{m.b.name}</b>
+                      </td>
+
+                      <td style={td}>
+                        <input
+                          type="number"
+                          defaultValue={m.bet.f9}
+                          onBlur={(e) => setBet(m.a.id, m.b.id, "f9", e.target.value)}
+                          style={inputBet}
+                        />
+                      </td>
+                      <td style={td}>
+                        <input
+                          type="checkbox"
+                          checked={!!m.dbl.f9}
+                          onChange={(e) => toggleDoblada(m.a.id, m.b.id, "f9", e.target.checked)}
+                        />
+                      </td>
+
+                      <td style={td}>
+                        <input
+                          type="number"
+                          defaultValue={m.bet.b9}
+                          onBlur={(e) => setBet(m.a.id, m.b.id, "b9", e.target.value)}
+                          style={inputBet}
+                        />
+                      </td>
+                      <td style={td}>
+                        <input
+                          type="checkbox"
+                          checked={!!m.dbl.b9}
+                          onChange={(e) => toggleDoblada(m.a.id, m.b.id, "b9", e.target.checked)}
+                        />
+                      </td>
+
+                      <td style={td}>
+                        <input
+                          type="number"
+                          defaultValue={m.bet.total}
+                          onBlur={(e) => setBet(m.a.id, m.b.id, "total", e.target.value)}
+                          style={inputBet}
+                        />
+                      </td>
+
+                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.front)}</td>
+                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.back)}</td>
+                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.total)}</td>
+                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMoney(m.money.moneyTotal)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+              Doblada: checkbox activa “doblada pedida por el que va perdiendo” en ese segmento.
+            </div>
+          </div>
+        )}
+      </section>
+
+      <hr style={hr} />
+
+      {/* Money by player */}
+      <section style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: "0 0 8px 0" }}>Totales por jugador (grupo)</h2>
+
+        {players.length === 0 ? (
+          <div style={{ opacity: 0.7 }}>Agrega jugadores.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
+              <thead>
+                <tr>
+                  <th style={thLeft}>Jugador</th>
+                  <th style={th}>Matches</th>
+                  <th style={th}>Greens</th>
+                  <th style={th}>Birdie/Eagle/Alb</th>
+                  <th style={thStrong}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {moneyRows.map((r) => (
+                  <tr key={r.id} style={{ borderTop: "1px solid #222" }}>
+                    <td style={tdLeft}><b>{r.name}</b></td>
+                    <td style={td}>{fmtMoney(r.matches)}</td>
+                    <td style={td}>{fmtMoney(r.greens)}</td>
+                    <td style={td}>{fmtMoney(r.bonus)}</td>
+                    <td style={{ ...tdStrong, color: r.total > 0 ? "#86efac" : r.total < 0 ? "#fca5a5" : "white" }}>
+                      {fmtMoney(r.total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+              Bonus = (birdie/eagle/albatross) pagado por todos los demás del grupo por ocurrencia. Greens igual por Par 3.
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -413,39 +693,28 @@ function PayoutInput({ label, value, onBlur }) {
   );
 }
 
-function PayoutText({ label, value, onBlur }) {
-  return (
-    <div style={pill}>
-      <div style={pillLabel}>{label}</div>
-      <input
-        type="text"
-        defaultValue={value}
-        onBlur={(e) => onBlur(e.target.value)}
-        style={pillInput}
-      />
-    </div>
-  );
-}
-
 function scoreStyle(cat) {
-  // Birdie = naranja, Eagle = verde, Albatross/HIO = rosa,
-  // Bogey = azul, Double+ = rojo
-  if (cat === "albatross") return { borderColor: "#ff77c8", background: "#2a0f22" };
-  if (cat === "eagle") return { borderColor: "#7dffb0", background: "#0d2417" };
-  if (cat === "birdie") return { borderColor: "#ffb15c", background: "#2a1b0b" };
-  if (cat === "bogey") return { borderColor: "#7aa7ff", background: "#0f182a" };
-  if (cat === "double") return { borderColor: "#ff6b6b", background: "#2a0f0f" };
+  if (cat === "albatross") return { borderColor: "#ff77c8", background: "#2a0f22" }; // rosa
+  if (cat === "eagle") return { borderColor: "#7dffb0", background: "#0d2417" };     // verde
+  if (cat === "birdie") return { borderColor: "#ffb15c", background: "#2a1b0b" };    // naranja
+  if (cat === "bogey") return { borderColor: "#7aa7ff", background: "#0f182a" };     // azul
+  if (cat === "double") return { borderColor: "#ff6b6b", background: "#2a0f0f" };    // rojo
   return {};
 }
 
+function fmtMatch(v) {
+  if (v === 0) return "AS";
+  if (v > 0) return `+${v}`;
+  return `${v}`;
+}
+function fmtMoney(n) {
+  const x = Number(n || 0);
+  if (x === 0) return "$0";
+  return x > 0 ? `+$${Math.round(x)}` : `-$${Math.abs(Math.round(x))}`;
+}
+
 // ---------- styles ----------
-const page = {
-  padding: 16,
-  fontFamily: "system-ui",
-  maxWidth: 1100,
-  margin: "0 auto",
-  color: "white",
-};
+const page = { padding: 16, fontFamily: "system-ui", maxWidth: 1100, margin: "0 auto", color: "white" };
 
 const header = {
   display: "flex",
@@ -459,106 +728,37 @@ const header = {
   borderBottom: "1px solid #1f1f1f",
 };
 
-const payoutRow = {
-  marginTop: 12,
-  display: "flex",
-  gap: 10,
-  flexWrap: "wrap",
-  alignItems: "center",
-};
+const payoutRow = { marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" };
 
-const pill = {
-  padding: "10px 12px",
-  borderRadius: 16,
-  border: "1px solid #242424",
-  background: "#0f0f0f",
-  minWidth: 140,
-};
-
+const pill = { padding: "10px 12px", borderRadius: 16, border: "1px solid #242424", background: "#0f0f0f", minWidth: 140 };
 const pillLabel = { opacity: 0.75, fontSize: 12, fontWeight: 900 };
+const pillInput = { marginTop: 6, width: "100%", padding: "10px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900 };
 
-const pillInput = {
-  marginTop: 6,
-  width: "100%",
-  padding: "10px 10px",
-  borderRadius: 12,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 900,
-};
+const card = { border: "1px solid #2a2a2a", borderRadius: 18, padding: 14, background: "#0f0f0f" };
+const select = { padding: "10px 12px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900, width: "100%" };
 
 const hr = { margin: "14px 0", borderColor: "#2a2a2a" };
 
-const th = {
-  textAlign: "center",
-  padding: 8,
-  background: "#1a1a1a",
-  color: "white",
-  fontWeight: 800,
-  borderBottom: "1px solid #2a2a2a",
-  whiteSpace: "nowrap",
-};
-
+const th = { textAlign: "center", padding: 8, background: "#1a1a1a", color: "white", fontWeight: 800, borderBottom: "1px solid #2a2a2a", whiteSpace: "nowrap" };
+const thLeft = { ...th, textAlign: "left" };
 const thMuted = { ...th, opacity: 0.7, fontWeight: 700, fontSize: 12 };
 const thStrong = { ...th, background: "#111827" };
 
 const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 220 };
 const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 2, textAlign: "left" };
 
-const td = { padding: 6, textAlign: "center", background: "#0f0f0f", color: "white" };
+const td = { padding: 8, textAlign: "center", background: "#0f0f0f", color: "white" };
+const tdLeft = { ...td, textAlign: "left" };
 const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 220 };
 const tdStrong = { ...td, fontWeight: 900, background: "#0b1220" };
 const tdMutedCell = { ...td, opacity: 0.9, background: "#0b0b0b", fontWeight: 900 };
 
-const inputName = {
-  width: "100%",
-  padding: "10px 10px",
-  borderRadius: 12,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 800,
-};
+const inputName = { width: "100%", padding: "10px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 800 };
+const inputHcp = { width: 80, padding: "8px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 700 };
+const inputScore = { width: 42, padding: "8px 6px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#111", color: "white", textAlign: "center", fontWeight: 700 };
 
-const inputHcp = {
-  width: 80,
-  padding: "8px 10px",
-  borderRadius: 12,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 700,
-};
+const inputBet = { width: 90, padding: "8px 10px", borderRadius: 12, border: "1px solid #2a2a2a", background: "#111", color: "white", textAlign: "center", fontWeight: 900 };
 
-const inputScore = {
-  width: 42,
-  padding: "8px 6px",
-  borderRadius: 10,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  textAlign: "center",
-  fontWeight: 700,
-};
-
-const btn = {
-  padding: "10px 14px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#141414",
-  color: "white",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
+const btn = { padding: "10px 14px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#141414", color: "white", fontWeight: 900, cursor: "pointer" };
 const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
-
-const btnDanger = {
-  padding: "8px 10px",
-  borderRadius: 12,
-  border: "1px solid #3a1a1a",
-  background: "#1a0f0f",
-  color: "#ffb4b4",
-  fontWeight: 800,
-};
+const btnDanger = { padding: "8px 10px", borderRadius: 12, border: "1px solid #3a1a1a", background: "#1a0f0f", color: "#ffb4b4", fontWeight: 800 };

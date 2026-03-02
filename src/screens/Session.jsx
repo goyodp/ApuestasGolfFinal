@@ -638,10 +638,12 @@ function GroupCard({ group, state, onOpen }) {
 
 // ---------- styles ----------
 const page = {
-  padding: 16,
-  fontFamily: "system-ui",
-  maxWidth: 1100,
-  margin: "0 auto",
+  minHeight: "100%",
+  paddingTop: "calc(14px + env(safe-area-inset-top))",
+  paddingBottom: "calc(14px + env(safe-area-inset-bottom))",
+  paddingLeft: "calc(14px + env(safe-area-inset-left))",
+  paddingRight: "calc(14px + env(safe-area-inset-right))",
+  background: "#050505",
   color: "white",
 };
 

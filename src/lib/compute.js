@@ -29,6 +29,10 @@ export function toNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+export function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
 export function pairKey(aId, bId) {
   return [aId, bId].sort().join("|");
 }
@@ -56,25 +60,23 @@ export function buildStrokeArray(strokes, strokeIndexes) {
 
 /**
  * buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes)
- * Used for NET leaderboard (per player).
- * Applies handicap % at session level.
+ * Used for NET + STB (per player).
  */
 export function buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes) {
-  const strokes = Math.max(
-    0,
-    Math.round((playerHcp || 0) * (toNum(hcpPercent) / 100))
-  );
+  const strokes = Math.max(0, Math.round((playerHcp || 0) * (toNum(hcpPercent) / 100)));
   return buildStrokeArray(strokes, strokeIndexes);
 }
 
 /**
  * For MATCHES we use DIFFERENCE of handicaps between players:
  * If A=1 and B=10 => B receives 9 strokes.
- * Returns { strokesA[18], strokesB[18] }
+ * Returns { diff, strokesA[18], strokesB[18] }
+ * diff > 0 => B receives diff strokes
+ * diff < 0 => A receives abs(diff) strokes
  */
 export function buildMatchStrokesByHcpDiff(hcpA, hcpB, hcpPercent, strokeIndexes) {
   const percent = toNum(hcpPercent) / 100;
-  const diff = Math.round((hcpB - hcpA) * percent); // positive => B receives, negative => A receives
+  const diff = Math.round((hcpB - hcpA) * percent);
 
   const strokesA = diff < 0 ? buildStrokeArray(Math.abs(diff), strokeIndexes) : Array(18).fill(0);
   const strokesB = diff > 0 ? buildStrokeArray(diff, strokeIndexes) : Array(18).fill(0);
@@ -83,7 +85,7 @@ export function buildMatchStrokesByHcpDiff(hcpA, hcpB, hcpPercent, strokeIndexes
 }
 
 // =====================
-// Gross / Net leaderboards
+// Gross / Net totals
 // =====================
 export function sumGross(arr18) {
   let t = 0;
@@ -103,44 +105,81 @@ export function sumNet(arr18, hcpAdj18) {
   return t;
 }
 
-/**
- * tie-break: if same gross/net, player with LOWER handicap ranks higher.
- */
-export function sortByScoreThenHcpAsc(a, b, scoreKey) {
-  if (a[scoreKey] !== b[scoreKey]) return a[scoreKey] - b[scoreKey]; // lower is better
+// =====================
+// Stableford (net) scoring
+// diff = par - net
+// -2 or worse => 0
+// -1 => 1
+//  0 => 2
+//  1 => 3
+//  2 => 4
+//  3+ => 5
+// =====================
+export function stablefordPoints(par, netScore) {
+  if (par == null || netScore == null) return 0;
+  const diff = par - netScore;
+
+  if (diff <= -2) return 0;
+  if (diff === -1) return 1;
+  if (diff === 0) return 2;
+  if (diff === 1) return 3;
+  if (diff === 2) return 4;
+  return 5; // diff >= 3
+}
+
+export function sumStableford(arr18, hcpAdj18, parValues) {
+  let t = 0;
+  for (let i = 0; i < 18; i++) {
+    const g = safeInt(arr18?.[i]);
+    if (g === null) continue;
+    const net = g - (hcpAdj18?.[i] || 0);
+    t += stablefordPoints(parValues?.[i], net);
+  }
+  return t;
+}
+
+// =====================
+// Sorting helpers
+// =====================
+export function sortAscThenHcpAsc(a, b, key) {
+  if (a[key] !== b[key]) return a[key] - b[key];     // lower is better
+  return (a.hcp || 0) - (b.hcp || 0);                // tie-break: lower hcp wins
+}
+
+export function sortDescThenHcpAsc(a, b, key) {
+  if (a[key] !== b[key]) return b[key] - a[key];     // higher is better
   return (a.hcp || 0) - (b.hcp || 0);
 }
 
-/**
- * computeLeaderboards({ groupsFull, courseId, hcpPercent })
- * groupsFull: [{ id, players:[{id,name,hcp}], scores:{[pid]:[18]} }, ...]
- */
+// =====================
+// Leaderboards (Net + Stableford)
+// =====================
 export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
-  const { strokeIndexes } = course;
+  const { strokeIndexes, parValues } = course;
 
-  const grossRows = [];
   const netRows = [];
+  const stbRows = [];
 
   for (const g of groupsFull) {
     const players = g.players || [];
     const scores = g.scores || {};
     for (const p of players) {
       const arr = scores[p.id] || Array(18).fill("");
-      const gross = sumGross(arr);
 
       const adj = buildHcpAdjustments(p.hcp || 0, hcpPercent, strokeIndexes);
       const net = sumNet(arr, adj);
+      const stb = sumStableford(arr, adj, parValues);
 
-      grossRows.push({ name: p.name || "", hcp: p.hcp || 0, gross, groupId: g.id, playerId: p.id });
       netRows.push({ name: p.name || "", hcp: p.hcp || 0, net, groupId: g.id, playerId: p.id });
+      stbRows.push({ name: p.name || "", hcp: p.hcp || 0, stb, groupId: g.id, playerId: p.id });
     }
   }
 
-  grossRows.sort((a, b) => sortByScoreThenHcpAsc(a, b, "gross"));
-  netRows.sort((a, b) => sortByScoreThenHcpAsc(a, b, "net"));
+  netRows.sort((a, b) => sortAscThenHcpAsc(a, b, "net"));
+  stbRows.sort((a, b) => sortDescThenHcpAsc(a, b, "stb"));
 
-  return { grossRows, netRows };
+  return { netRows, stbRows };
 }
 
 // =====================
@@ -152,13 +191,7 @@ function holeResult(aAdj, bAdj) {
   return 0;
 }
 
-export function computeMatchResultForPair({
-  a,
-  b,
-  scores,        // scores dict { [pid]: [18] }
-  courseId,
-  hcpPercent,
-}) {
+export function computeMatchResultForPair({ a, b, scores, courseId, hcpPercent }) {
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const { strokeIndexes } = course;
 
@@ -192,99 +225,35 @@ export function computeMatchResultForPair({
     label: `${a.name} vs ${b.name}`,
     a: { id: a.id, name: a.name, hcp: a.hcp || 0 },
     b: { id: b.id, name: b.name, hcp: b.hcp || 0 },
-    diff, // (hcpB-hcpA)*%  => positive means B receives strokes
+    diff,
     front,
     back,
     total: front + back,
   };
 }
 
-/**
- * computeMatchesByGroup
- * Returns { [groupId]: [ {label,front,back,total,diff,..., moneyBreakdown } ] }
- */
-export function computeMatchesByGroup({
-  groupsFull,
-  courseId,
-  hcpPercent,
-  matchBetsByGroup = {},   // { [groupId]: { "p1|p2": {f9,b9,total}, ... } }
-  dobladasByGroup = {},    // { [groupId]: { "p1|p2": {f9By,b9By,totalBy}, ... } }
-}) {
-  const out = {};
-
-  for (const g of groupsFull) {
-    const players = g.players || [];
-    const scores = g.scores || {};
-    const bets = matchBetsByGroup[g.id] || {};
-    const dobladas = dobladasByGroup[g.id] || {};
-
-    const res = [];
-
-    for (let i = 0; i < players.length; i++) {
-      for (let j = i + 1; j < players.length; j++) {
-        const a = players[i];
-        const b = players[j];
-
-        const r = computeMatchResultForPair({
-          a,
-          b,
-          scores,
-          courseId,
-          hcpPercent,
-        });
-
-        const key = pairKey(a.id, b.id);
-        const bet = bets[key] || { f9: 0, b9: 0, total: 0 };
-        const dbl = dobladas[key] || { f9By: null, b9By: null, totalBy: null };
-
-        const money = calcMatchMoneyForPair({
-          pairResult: r,
-          aId: a.id,
-          bId: b.id,
-          matchBetsForPair: bet,
-          dobladasForPair: dbl,
-        });
-
-        res.push({ ...r, bet, doblada: dbl, money });
-      }
-    }
-
-    out[g.id] = res;
-  }
-
-  return out;
-}
-
 // =====================
-// Dobladas / Money
+// Dobladas / Money (segment fixed bet, doblada duplica ese segmento)
 // =====================
-
 function loserIdFromResult(segmentResult, aId, bId) {
-  if (segmentResult === 0) return null;      // AS
-  return segmentResult > 0 ? bId : aId;      // if A is winning => B is losing
+  if (segmentResult === 0) return null;
+  return segmentResult > 0 ? bId : aId; // if A winning => B losing
 }
 
 function segmentMultiplier({ segmentResult, aId, bId, requestedBy }) {
   if (!requestedBy) return 1;
   const loserId = loserIdFromResult(segmentResult, aId, bId);
   if (!loserId) return 1;
-  return requestedBy === loserId ? 2 : 1;    // only the loser can double
+  return requestedBy === loserId ? 2 : 1;
 }
 
 /**
  * Money is from A perspective (+ means A wins money, - means A owes money).
- * Doblada doubles that segment ONLY if requestedBy was losing that segment.
  */
-export function calcMatchMoneyForPair({
-  pairResult,          // {front,back,total}
-  aId,
-  bId,
-  matchBetsForPair,    // {f9,b9,total}
-  dobladasForPair      // {f9By,b9By,totalBy}
-}) {
+export function calcMatchMoneyForPair({ pairResult, aId, bId, matchBetsForPair, dobladasForPair }) {
   const f9Bet = toNum(matchBetsForPair?.f9);
   const b9Bet = toNum(matchBetsForPair?.b9);
-  const tBet  = toNum(matchBetsForPair?.total);
+  const tBet = toNum(matchBetsForPair?.total);
 
   const f9Mult = segmentMultiplier({
     segmentResult: pairResult.front,
@@ -308,8 +277,8 @@ export function calcMatchMoneyForPair({
   });
 
   const moneyF9 = pairResult.front === 0 ? 0 : Math.sign(pairResult.front) * f9Bet * f9Mult;
-  const moneyB9 = pairResult.back  === 0 ? 0 : Math.sign(pairResult.back)  * b9Bet * b9Mult;
-  const moneyT  = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * tBet  * tMult;
+  const moneyB9 = pairResult.back === 0 ? 0 : Math.sign(pairResult.back) * b9Bet * b9Mult;
+  const moneyT = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * tBet * tMult;
 
   return {
     moneyF9,
@@ -320,39 +289,6 @@ export function calcMatchMoneyForPair({
   };
 }
 
-// =====================
-// Player totals (matches money only)
-// =====================
-export function computePlayerMatchTotals({
-  groupsFull,
-  matchesByGroup, // output from computeMatchesByGroup
-}) {
-  const totals = {}; // { [playerId]: {name, groupId, total} }
-
-  for (const g of groupsFull) {
-    const players = g.players || [];
-    for (const p of players) {
-      totals[p.id] = totals[p.id] || { playerId: p.id, name: p.name || "", groupId: g.id, matchMoney: 0 };
-    }
-
-    const matches = matchesByGroup[g.id] || [];
-    for (const m of matches) {
-      const aId = m.a?.id;
-      const bId = m.b?.id;
-      const moneyA = toNum(m.money?.moneyTotal);
-
-      // A perspective:
-      if (aId && totals[aId]) totals[aId].matchMoney += moneyA;
-      if (bId && totals[bId]) totals[bId].matchMoney -= moneyA;
-    }
-  }
-
-  return Object.values(totals);
-}
-
-// =====================
-// Format helpers (optional)
-// =====================
 export function fmtMatch(v) {
   if (v === 0) return "AS";
   if (v > 0) return `+${v}`;

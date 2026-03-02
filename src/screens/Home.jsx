@@ -70,30 +70,52 @@ export default function Home() {
     return () => unsub();
   }, []);
 
-  const loginGoogle = async () => {
-    if (isBusy) return;
-    setLoadingGoogle(true);
-    try {
-      // 1) Login nativo (Capacitor plugin)
-      const res = await FirebaseAuthentication.signInWithGoogle();
+const loginGoogle = async () => {
+  if (isBusy) return;
+  setLoadingGoogle(true);
 
-      // 2) Bridge a Firebase JS Auth (ESTO ES LO QUE TE FALTABA)
-      const idToken = res?.credential?.idToken;
-      const accessToken = res?.credential?.accessToken;
+  try {
+    const res = await FirebaseAuthentication.signInWithGoogle();
 
-      if (!idToken && !accessToken) {
-        throw new Error("Google login no regresó idToken/accessToken.");
-      }
+    // Algunos builds regresan los tokens en llaves distintas.
+    const idToken =
+      res?.credential?.idToken ||
+      res?.credential?.id_token ||
+      res?.credential?.token ||
+      res?.credential?.oauthIdToken ||
+      res?.idToken ||
+      null;
 
-      const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
-      await signInWithCredential(auth, credential);
-      // onAuthStateChanged ahora sí debe dispararse y cambiar la UI
-    } catch (e) {
-      alert(normalizeErr(e) || "No se pudo iniciar sesión con Google");
-    } finally {
-      setLoadingGoogle(false);
+    const accessToken =
+      res?.credential?.accessToken ||
+      res?.credential?.access_token ||
+      res?.accessToken ||
+      null;
+
+    if (!idToken && !accessToken) {
+      throw new Error(
+        "Google regresó usuario pero NO regresó tokens (idToken/accessToken)."
+      );
     }
-  };
+
+    const credential = GoogleAuthProvider.credential(
+      idToken || null,
+      accessToken || null
+    );
+
+    // Timeout duro para evitar que se quede “Entrando…” infinito
+    await Promise.race([
+      signInWithCredential(auth, credential),
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("Firebase Web signInWithCredential: timeout")), 12000)
+      ),
+    ]);
+  } catch (e) {
+    alert(normalizeErr(e));
+  } finally {
+    setLoadingGoogle(false);
+  }
+};
 
   const loginApple = async () => {
     if (isBusy) return;

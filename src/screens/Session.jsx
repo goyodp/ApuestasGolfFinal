@@ -36,7 +36,7 @@ export default function Session() {
   const navigate = useNavigate();
 
   const [session, setSession] = useState(null);
-  const [settings, setSettings] = useState(null); // settings/main (entry fee + bolaRosaEnabled)
+  const [settings, setSettings] = useState(null); // settings/main (entryFee + bolaRosaEnabled)
   const [groups, setGroups] = useState([]);
   const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
 
@@ -45,6 +45,12 @@ export default function Session() {
   const [savingHistory, setSavingHistory] = useState(false);
   const [savingEntry, setSavingEntry] = useState(false);
   const [savingBolaRosa, setSavingBolaRosa] = useState(false);
+
+  // UI collapsables
+  const [openSession, setOpenSession] = useState(true);
+  const [openH2H, setOpenH2H] = useState(false);
+  const [openLeaderboards, setOpenLeaderboards] = useState(true);
+  const [openGroups, setOpenGroups] = useState(true);
 
   // Cross-group H2H
   const [h2hA, setH2hA] = useState("");
@@ -99,10 +105,12 @@ export default function Session() {
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
 
+  const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
+
   const copySessionId = async () => {
     try {
       await navigator.clipboard.writeText(sessionId);
-      alert("Session ID copiado ✅");
+      toast("Session ID copiado ✅");
     } catch {
       alert("No pude copiar. Cópialo manual: " + sessionId);
     }
@@ -196,6 +204,9 @@ export default function Session() {
       });
 
       await updateDoc(doc(db, "sessions", sessionId), { updatedAt: serverTimestamp() });
+      toast("Grupo creado ✅");
+      // Abre directo el scorecard (más user-friendly)
+      navigate(`/session/${sessionId}/group/${groupDocId}`);
     } catch (e) {
       console.error(e);
       alert(e?.message || "Error creando grupo");
@@ -287,7 +298,7 @@ export default function Session() {
         createdAt: serverTimestamp(),
         createdByUid: auth.currentUser?.uid || null,
       });
-      alert("Historial guardado ✅");
+      toast("Historial guardado ✅");
     } catch (e) {
       console.error(e);
       alert(e?.message || "No pude guardar historial");
@@ -296,13 +307,16 @@ export default function Session() {
     }
   };
 
+  // ---------- Guards ----------
   if (!sessionId) {
     return (
       <div style={page}>
-        <h2>Falta Session ID</h2>
-        <button style={btn} onClick={() => navigate("/")}>
-          Volver
-        </button>
+        <div style={fallbackCard}>
+          <div style={{ fontWeight: 1000, fontSize: 18 }}>Falta Session ID</div>
+          <button style={btn} onClick={() => navigate("/")}>
+            Volver
+          </button>
+        </div>
       </div>
     );
   }
@@ -349,365 +363,603 @@ export default function Session() {
     const a = { id: `A__${pickA.groupId}__${pickA.playerId}`, name: pickA.name, hcp: pickA.hcp };
     const b = { id: `B__${pickB.groupId}__${pickB.playerId}`, name: pickB.name, hcp: pickB.hcp };
 
-    const scores = {
-      [a.id]: scoresA,
-      [b.id]: scoresB,
-    };
-
+    const scores = { [a.id]: scoresA, [b.id]: scoresB };
     h2hRes = computeMatchResultForPair({ a, b, scores, courseId });
   }
 
-  const courseLabel = (COURSES.find((c) => c.id === courseId)?.label) || courseId;
-
   return (
     <div style={page}>
-      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 260 }}>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 950, letterSpacing: -0.5 }}>
-            {session.name || "Sesión"}
-          </h1>
+      <style>{baseCss}</style>
 
-          <div style={{ opacity: 0.85, marginTop: 6 }}>
-            Status: <b>{session.status || "live"}</b> · Campo: <b>{courseLabel}</b>
-          </div>
+      {/* App Bar */}
+      <div style={appBar}>
+        <button onClick={() => navigate("/")} style={iconBtn} aria-label="Home">
+          ←
+        </button>
 
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <code style={pillCode}>{sessionId}</code>
-            <button onClick={copySessionId} style={btn}>Copiar</button>
-            <button onClick={saveHistory} disabled={savingHistory} style={btnPrimary}>
-              {savingHistory ? "Guardando..." : "💾 Guardar Historial"}
-            </button>
-          </div>
-
-          {/* Campo + %Hcp */}
-          <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 900 }}>Campo:</div>
-            <select value={courseId} onChange={(e) => changeCourse(e.target.value)} style={select} disabled={savingCourse}>
-              {COURSES.map((c) => (
-                <option key={c.id} value={c.id}>{c.label}</option>
-              ))}
-            </select>
-            {savingCourse ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
-
-            <div style={{ width: 10 }} />
-
-            <div style={{ fontWeight: 900 }}>% Handicap (Net/STB):</div>
-            <input type="number" defaultValue={hcpPercent} onBlur={(e) => changeHcpPercent(e.target.value)} style={inputSmall} />
-            <span style={{ opacity: 0.75 }}>matches siempre 100%</span>
-          </div>
-
-          {/* Entry Fee global */}
-          <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 900 }}>Entry (polla) por jugador:</div>
-            <input type="number" defaultValue={entryFee} onBlur={(e) => changeEntryFee(e.target.value)} style={inputSmall} />
-            {savingEntry ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
-            <span style={{ opacity: 0.75 }}>
-              Pool: <b>${Math.round(prizes.pool)}</b> ({prizes.totalPlayers} jugadores)
-            </span>
-          </div>
-
-          {/* Bola Rosa toggle */}
-          <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <label style={toggleRow}>
-              <input
-                type="checkbox"
-                checked={bolaRosaEnabled}
-                onChange={(e) => toggleBolaRosa(e.target.checked)}
-              />
-              <span style={{ fontWeight: 900 }}>Habilitar Bola Rosa</span>
-            </label>
-            {savingBolaRosa ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
-          </div>
-
-          {/* Winners */}
-          <div style={{ marginTop: 12 }}>
-            <div style={card}>
-              <div style={{ fontWeight: 950, marginBottom: 6 }}>Premios Entry (50/30/20)</div>
-              <div style={{ opacity: 0.9, display: "flex", gap: 14, flexWrap: "wrap" }}>
-                <div>
-                  🥇 STB 1º: <b>{prizes.winners.stableford1?.name || "-"}</b>{" "}
-                  <span style={{ opacity: 0.75 }}>
-                    ({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0)})
-                  </span>
-                </div>
-                <div>
-                  🥈 STB 2º: <b>{prizes.winners.stableford2?.name || "-"}</b>{" "}
-                  <span style={{ opacity: 0.75 }}>
-                    ({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0)})
-                  </span>
-                </div>
-                <div>
-                  🏆 Net 1º: <b>{prizes.winners.net1?.name || "-"}</b>{" "}
-                  <span style={{ opacity: 0.75 }}>
-                    ({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0)})
-                  </span>
-                </div>
-              </div>
-              <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-                Net 1º excluye a los dos ganadores de Stableford.
-              </div>
-            </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={barTitle}>{session.name || "Sesión"}</div>
+          <div style={barSub}>
+            {courseLabel} · %Hcp {hcpPercent} · {groups.length} grupos
           </div>
         </div>
 
-        <button onClick={() => navigate("/")} style={btn}>← Home</button>
-      </div>
-
-      <hr style={hr} />
-
-      {/* Cross-group H2H */}
-      <section style={{ marginBottom: 18 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Head-to-Head (cualquier jugador vs cualquier jugador)</h2>
-        <div style={card}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <div style={{ minWidth: 240, flex: 1 }}>
-              <div style={miniLabel}>Player A</div>
-              <select value={h2hA} onChange={(e) => setH2hA(e.target.value)} style={selectWide}>
-                <option value="">— Selecciona —</option>
-                {allPlayers.map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.name} · {p.groupId} · hcp {p.hcp}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div style={{ minWidth: 240, flex: 1 }}>
-              <div style={miniLabel}>Player B</div>
-              <select value={h2hB} onChange={(e) => setH2hB(e.target.value)} style={selectWide}>
-                <option value="">— Selecciona —</option>
-                {allPlayers.map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.name} · {p.groupId} · hcp {p.hcp}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            {!h2hRes ? (
-              <div style={{ opacity: 0.75 }}>
-                Elige dos jugadores (pueden ser de grupos diferentes) y te calculo F9/B9/Total.
-              </div>
-            ) : (
-              <div style={h2hStrip}>
-                <div style={{ fontWeight: 950, marginBottom: 8 }}>
-                  {h2hRes.label} <span style={{ opacity: 0.7, fontWeight: 800 }}>· diff {h2hRes.diff}</span>
-                </div>
-                <div style={h2hGrid}>
-                  <div style={h2hCell}>
-                    <div style={h2hHead}>F9</div>
-                    <div style={h2hVal(h2hRes.front)}>{fmtMatch(h2hRes.front)}</div>
-                  </div>
-                  <div style={h2hCell}>
-                    <div style={h2hHead}>B9</div>
-                    <div style={h2hVal(h2hRes.back)}>{fmtMatch(h2hRes.back)}</div>
-                  </div>
-                  <div style={h2hCell}>
-                    <div style={h2hHead}>Total</div>
-                    <div style={h2hVal(h2hRes.total)}>{fmtMatch(h2hRes.total)}</div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <hr style={hr} />
-
-      {/* Leaderboards */}
-      <section style={{ marginBottom: 18 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Leaderboard (General)</h2>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-          <div style={card}>
-            <div style={cardTitle}>Stableford (mejor = mayor)</div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={miniTable}>
-                <thead>
-                  <tr>
-                    <th style={miniTh}>#</th>
-                    <th style={miniThLeft}>Jugador</th>
-                    <th style={miniTh}>HCP</th>
-                    <th style={miniTh}>STB</th>
-                    <th style={miniTh}>Grupo</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stablefordRows.slice(0, 50).map((r, i) => (
-                    <tr key={`${r.playerKey}-${i}`}>
-                      <td style={miniTd}>{i + 1}</td>
-                      <td style={miniTdLeft}>{r.name}</td>
-                      <td style={miniTd}>{r.hcp}</td>
-                      <td style={miniTd}><b>{r.stableford}</b></td>
-                      <td style={miniTd}>{r.groupId}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-              Empate: gana el HCP menor.
-            </div>
-          </div>
-
-          <div style={card}>
-            <div style={cardTitle}>Net (mejor = menor)</div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={miniTable}>
-                <thead>
-                  <tr>
-                    <th style={miniTh}>#</th>
-                    <th style={miniThLeft}>Jugador</th>
-                    <th style={miniTh}>HCP</th>
-                    <th style={miniTh}>Net</th>
-                    <th style={miniTh}>Grupo</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {netRows.slice(0, 50).map((r, i) => (
-                    <tr key={`${r.playerKey}-${i}`}>
-                      <td style={miniTd}>{i + 1}</td>
-                      <td style={miniTdLeft}>{r.name}</td>
-                      <td style={miniTd}>{r.hcp}</td>
-                      <td style={miniTd}><b>{r.net}</b></td>
-                      <td style={miniTd}>{r.groupId}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-              Empate: gana el HCP menor.
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <hr style={hr} />
-
-      {/* Groups (simple) */}
-      <section>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <h2 style={{ margin: 0 }}>Groups</h2>
-          <button onClick={addGroup} disabled={creatingGroup} style={btn}>
-            {creatingGroup ? "Creando..." : "+ Agregar grupo"}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={copySessionId} style={chipBtn}>
+            Copiar ID
+          </button>
+          <button onClick={saveHistory} disabled={savingHistory} style={chipBtnPrimary}>
+            {savingHistory ? "Guardando…" : "Guardar"}
           </button>
         </div>
+      </div>
 
-        <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-          {groups.length === 0 ? (
-            <div style={{ opacity: 0.75 }}>No hay grupos todavía.</div>
-          ) : (
-            groups.map((g) => (
-              <GroupCard
-                key={g.id}
-                group={g}
-                state={groupsStateMap[g.id]}
-                onOpen={() => navigate(`/session/${sessionId}/group/${g.id}`)}
+      <div style={content}>
+        {/* Session Settings */}
+        <Collapsible
+          title="Configuración"
+          subtitle={`Status ${session.status || "live"} · Entry ${fmtMoney(entryFee)} · Bola Rosa ${bolaRosaEnabled ? "On" : "Off"}`}
+          open={openSession}
+          setOpen={setOpenSession}
+        >
+          <div style={grid2}>
+            <div style={field}>
+              <div style={label}>Session ID</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <code style={codePill}>{sessionId}</code>
+                <button onClick={copySessionId} style={smallBtn}>
+                  Copiar
+                </button>
+              </div>
+            </div>
+
+            <div style={field}>
+              <div style={label}>Campo</div>
+              <select value={courseId} onChange={(e) => changeCourse(e.target.value)} style={selectDark} disabled={savingCourse}>
+                {COURSES.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              {savingCourse ? <div style={hint}>Guardando…</div> : null}
+            </div>
+
+            <div style={field}>
+              <div style={label}>% Handicap (Net/STB)</div>
+              <input
+                type="number"
+                defaultValue={hcpPercent}
+                onBlur={(e) => changeHcpPercent(e.target.value)}
+                style={inputDark}
+                inputMode="numeric"
               />
-            ))
-          )}
-        </div>
-      </section>
+              <div style={hint}>Matches siempre 100%.</div>
+            </div>
+
+            <div style={field}>
+              <div style={label}>Entry fee (por jugador)</div>
+              <input
+                type="number"
+                defaultValue={entryFee}
+                onBlur={(e) => changeEntryFee(e.target.value)}
+                style={inputDark}
+                inputMode="numeric"
+              />
+              {savingEntry ? <div style={hint}>Guardando…</div> : null}
+            </div>
+
+            <div style={{ ...field, gridColumn: "1 / -1" }}>
+              <div style={label}>Pool & Premios</div>
+              <div style={cardDark}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={pillStat}>
+                    <div style={pillTop}>Pool</div>
+                    <div style={pillVal}>${Math.round(prizes.pool)}</div>
+                    <div style={pillBottom}>{prizes.totalPlayers} jugadores</div>
+                  </div>
+
+                  <div style={winnersWrap}>
+                    <WinnerLine
+                      emoji="🥇"
+                      label="STB 1º"
+                      name={prizes.winners.stableford1?.name}
+                      money={prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0}
+                    />
+                    <WinnerLine
+                      emoji="🥈"
+                      label="STB 2º"
+                      name={prizes.winners.stableford2?.name}
+                      money={prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0}
+                    />
+                    <WinnerLine
+                      emoji="🏆"
+                      label="Net 1º"
+                      name={prizes.winners.net1?.name}
+                      money={prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0}
+                    />
+                    <div style={{ opacity: 0.7, fontSize: 12, marginTop: 6 }}>
+                      Net 1º excluye a los dos ganadores de Stableford.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ ...field, gridColumn: "1 / -1" }}>
+              <label style={togglePill}>
+                <input type="checkbox" checked={bolaRosaEnabled} onChange={(e) => toggleBolaRosa(e.target.checked)} />
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                  <span style={{ fontWeight: 950, color: "white" }}>Habilitar Bola Rosa</span>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>
+                    Activa selección de ganador en cada grupo.
+                  </span>
+                </div>
+              </label>
+              {savingBolaRosa ? <div style={hint}>Guardando…</div> : null}
+            </div>
+          </div>
+        </Collapsible>
+
+        {/* H2H */}
+        <Collapsible
+          title="Head-to-Head (cross-group)"
+          subtitle="Cualquier jugador vs cualquier jugador · F9/B9/Total"
+          open={openH2H}
+          setOpen={setOpenH2H}
+        >
+          <div style={cardDark}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <div style={label}>Player A</div>
+                <select value={h2hA} onChange={(e) => setH2hA(e.target.value)} style={selectDark}>
+                  <option value="">— Selecciona —</option>
+                  {allPlayers.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.name} · {p.groupId} · hcp {p.hcp}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div style={label}>Player B</div>
+                <select value={h2hB} onChange={(e) => setH2hB(e.target.value)} style={selectDark}>
+                  <option value="">— Selecciona —</option>
+                  {allPlayers.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.name} · {p.groupId} · hcp {p.hcp}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              {!h2hRes ? (
+                <div style={{ opacity: 0.75 }}>Elige dos jugadores y te calculo F9/B9/Total.</div>
+              ) : (
+                <div style={h2hStrip}>
+                  <div style={{ fontWeight: 950, marginBottom: 8 }}>
+                    {h2hRes.label} <span style={{ opacity: 0.7, fontWeight: 800 }}>· diff {h2hRes.diff}</span>
+                  </div>
+                  <div style={h2hGrid}>
+                    <div style={h2hCell}>
+                      <div style={h2hHead}>F9</div>
+                      <div style={h2hVal(h2hRes.front)}>{fmtMatch(h2hRes.front)}</div>
+                    </div>
+                    <div style={h2hCell}>
+                      <div style={h2hHead}>B9</div>
+                      <div style={h2hVal(h2hRes.back)}>{fmtMatch(h2hRes.back)}</div>
+                    </div>
+                    <div style={h2hCell}>
+                      <div style={h2hHead}>Total</div>
+                      <div style={h2hVal(h2hRes.total)}>{fmtMatch(h2hRes.total)}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </Collapsible>
+
+        {/* Leaderboards */}
+        <Collapsible
+          title="Leaderboards"
+          subtitle="Stableford y Net (General)"
+          open={openLeaderboards}
+          setOpen={setOpenLeaderboards}
+        >
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={cardDark}>
+              <div style={cardTitle}>Stableford</div>
+              <div style={tableWrap}>
+                <table style={miniTable}>
+                  <thead>
+                    <tr>
+                      <th style={miniTh}>#</th>
+                      <th style={miniThLeft}>Jugador</th>
+                      <th style={miniTh}>HCP</th>
+                      <th style={miniTh}>STB</th>
+                      <th style={miniTh}>Grupo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stablefordRows.slice(0, 50).map((r, i) => (
+                      <tr key={`${r.playerKey}-${i}`}>
+                        <td style={miniTd}>{i + 1}</td>
+                        <td style={miniTdLeft}>{r.name}</td>
+                        <td style={miniTd}>{r.hcp}</td>
+                        <td style={miniTd}>
+                          <b style={{ color: "white" }}>{r.stableford}</b>
+                        </td>
+                        <td style={miniTd}>{r.groupId}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={hint}>Empate: gana el HCP menor.</div>
+            </div>
+
+            <div style={cardDark}>
+              <div style={cardTitle}>Net</div>
+              <div style={tableWrap}>
+                <table style={miniTable}>
+                  <thead>
+                    <tr>
+                      <th style={miniTh}>#</th>
+                      <th style={miniThLeft}>Jugador</th>
+                      <th style={miniTh}>HCP</th>
+                      <th style={miniTh}>Net</th>
+                      <th style={miniTh}>Grupo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {netRows.slice(0, 50).map((r, i) => (
+                      <tr key={`${r.playerKey}-${i}`}>
+                        <td style={miniTd}>{i + 1}</td>
+                        <td style={miniTdLeft}>{r.name}</td>
+                        <td style={miniTd}>{r.hcp}</td>
+                        <td style={miniTd}>
+                          <b style={{ color: "white" }}>{r.net}</b>
+                        </td>
+                        <td style={miniTd}>{r.groupId}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={hint}>Empate: gana el HCP menor.</div>
+            </div>
+          </div>
+        </Collapsible>
+
+        {/* Groups */}
+        <Collapsible
+          title="Groups"
+          subtitle={`${groups.length} grupos · tap para abrir scorecard`}
+          open={openGroups}
+          setOpen={setOpenGroups}
+          right={
+            <button onClick={addGroup} disabled={creatingGroup} style={smallPrimaryBtn}>
+              {creatingGroup ? "Creando…" : "+ Grupo"}
+            </button>
+          }
+        >
+          <div style={{ display: "grid", gap: 12 }}>
+            {groups.length === 0 ? (
+              <div style={{ opacity: 0.78 }}>No hay grupos todavía.</div>
+            ) : (
+              groups.map((g) => (
+                <GroupCard
+                  key={g.id}
+                  group={g}
+                  state={groupsStateMap[g.id]}
+                  onOpen={() => navigate(`/session/${sessionId}/group/${g.id}`)}
+                />
+              ))
+            )}
+          </div>
+        </Collapsible>
+
+        <div style={{ height: 16 }} />
+      </div>
     </div>
+  );
+}
+
+/* ---------------- UI helpers ---------------- */
+
+function Collapsible({ title, subtitle, open, setOpen, right, children }) {
+  return (
+    <section style={section}>
+      <button onClick={() => setOpen(!open)} style={collapsibleHead}>
+        <div style={{ minWidth: 0 }}>
+          <div style={sectionTitle}>{title}</div>
+          {subtitle ? <div style={subText2}>{subtitle}</div> : null}
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {right ? <div onClick={(e) => e.stopPropagation()}>{right}</div> : null}
+          <div style={chev}>{open ? "▾" : "▸"}</div>
+        </div>
+      </button>
+      {open ? <div style={collapsibleBody}>{children}</div> : null}
+    </section>
   );
 }
 
 function GroupCard({ group, state, onOpen }) {
   const players = state?.players || [];
+  const filled = countFilledScores(state?.scores);
   return (
-    <div style={groupCard}>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontWeight: 950, fontSize: 18 }}>
-            {group.name || group.id}{" "}
-            <span style={{ opacity: 0.7, fontWeight: 800 }}>(order {group.order})</span>
+    <button style={groupCardBtn} onClick={onOpen}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 1000, fontSize: 16, color: "white" }}>
+            {group.name || group.id}
           </div>
-          <div style={{ opacity: 0.8, marginTop: 6 }}>
-            Jugadores: <b>{players.length}</b> / 6
+          <div style={{ marginTop: 6, opacity: 0.78, fontSize: 12 }}>
+            {players.length}/6 jugadores · {filled} scores capturados
           </div>
         </div>
-        <button style={btnPrimary} onClick={onOpen}>Abrir Scorecard →</button>
+        <div style={openPill}>Abrir</div>
       </div>
+    </button>
+  );
+}
+
+function WinnerLine({ emoji, label, name, money }) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+      <div style={{ width: 22 }}>{emoji}</div>
+      <div style={{ fontWeight: 900, opacity: 0.9 }}>{label}:</div>
+      <div style={{ fontWeight: 950, color: "white" }}>{name || "-"}</div>
+      <div style={{ opacity: 0.75 }}>{fmtMoney(money)}</div>
     </div>
   );
 }
 
-// ---------- styles ----------
+function toast(msg) {
+  // tiny toast without deps
+  const el = document.createElement("div");
+  el.textContent = msg;
+  Object.assign(el.style, {
+    position: "fixed",
+    left: "50%",
+    bottom: "calc(18px + env(safe-area-inset-bottom))",
+    transform: "translateX(-50%)",
+    background: "rgba(15,23,42,0.92)",
+    color: "white",
+    padding: "10px 12px",
+    borderRadius: "14px",
+    border: "1px solid rgba(148,163,184,0.18)",
+    fontWeight: 900,
+    zIndex: 9999,
+    maxWidth: "90vw",
+    textAlign: "center",
+    boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+  });
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1400);
+}
+
+function countFilledScores(scoresObj) {
+  if (!scoresObj) return 0;
+  let n = 0;
+  for (const k of Object.keys(scoresObj)) {
+    const arr = Array.isArray(scoresObj[k]) ? scoresObj[k] : [];
+    for (const v of arr) if (String(v || "").trim() !== "") n++;
+  }
+  return n;
+}
+
+/* ---------------- Styles (premium dark, mobile-first) ---------------- */
+
+const baseCss = `
+  * { box-sizing: border-box; }
+  input, button, select { font: inherit; }
+  button { -webkit-tap-highlight-color: transparent; }
+  input:focus, select:focus { outline: none; }
+  table { border-spacing: 0; }
+`;
+
 const page = {
   minHeight: "100%",
-  paddingTop: "calc(14px + env(safe-area-inset-top))",
-  paddingBottom: "calc(14px + env(safe-area-inset-bottom))",
-  paddingLeft: "calc(14px + env(safe-area-inset-left))",
-  paddingRight: "calc(14px + env(safe-area-inset-right))",
-  background: "#050505",
-  color: "white",
+  background:
+    "radial-gradient(1200px 700px at 10% 0%, rgba(59,130,246,0.10) 0%, rgba(0,0,0,0) 45%), #05070b",
+  color: "#e5e7eb",
+  paddingTop: "env(safe-area-inset-top)",
+  paddingBottom: "env(safe-area-inset-bottom)",
+  paddingLeft: "env(safe-area-inset-left)",
+  paddingRight: "env(safe-area-inset-right)",
 };
 
-const hr = { margin: "18px 0", borderColor: "#2a2a2a" };
+const content = { padding: 12, maxWidth: 1100, margin: "0 auto" };
 
-const pillCode = {
-  padding: "8px 12px",
-  borderRadius: 14,
-  background: "#0f0f0f",
-  border: "1px solid #2a2a2a",
-  color: "white",
-  fontWeight: 900,
-};
-
-const btn = {
-  padding: "10px 14px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#141414",
-  color: "white",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-const btnPrimary = {
-  ...btn,
-  background: "#1f2937",
-  border: "1px solid #374151",
-};
-
-const select = {
+const appBar = {
+  position: "sticky",
+  top: 0,
+  zIndex: 50,
   padding: "10px 12px",
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  justifyContent: "space-between",
+  backdropFilter: "blur(14px)",
+  background: "rgba(5,7,11,0.70)",
+  borderBottom: "1px solid rgba(148,163,184,0.14)",
+};
+
+const iconBtn = {
+  width: 40,
+  height: 40,
   borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#111",
+  border: "1px solid rgba(148,163,184,0.18)",
+  background: "rgba(15,23,42,0.55)",
   color: "white",
-  fontWeight: 900,
-  minWidth: 220,
+  fontWeight: 1000,
 };
 
-const selectWide = {
-  ...select,
-  width: "100%",
-  minWidth: 0,
-};
-
-const inputSmall = {
-  width: 90,
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#111",
+const barTitle = {
+  fontSize: 16,
+  fontWeight: 1000,
+  letterSpacing: -0.4,
   color: "white",
-  fontWeight: 900,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  maxWidth: 220,
 };
 
-const card = {
-  border: "1px solid #2a2a2a",
+const barSub = {
+  fontSize: 12,
+  opacity: 0.75,
+  marginTop: 2,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  maxWidth: 260,
+};
+
+const chipBtn = {
+  height: 40,
+  padding: "0 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(148,163,184,0.18)",
+  background: "rgba(15,23,42,0.55)",
+  color: "white",
+  fontWeight: 950,
+};
+
+const chipBtnPrimary = {
+  ...chipBtn,
+  border: "1px solid rgba(59,130,246,0.35)",
+  background: "rgba(59,130,246,0.18)",
+  color: "#dbeafe",
+};
+
+const section = {
   borderRadius: 18,
-  padding: 14,
-  background: "#0f0f0f",
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "linear-gradient(180deg, rgba(15,23,42,0.55) 0%, rgba(2,6,23,0.35) 100%)",
+  boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+  overflow: "hidden",
+  marginTop: 12,
 };
 
-const cardTitle = { fontWeight: 900, marginBottom: 10, fontSize: 16 };
+const collapsibleHead = {
+  width: "100%",
+  padding: "12px 12px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  background: "transparent",
+  color: "#e5e7eb",
+  border: "none",
+  textAlign: "left",
+};
+
+const collapsibleBody = { padding: 12, paddingTop: 0 };
+
+const sectionTitle = { fontSize: 14, fontWeight: 1000, letterSpacing: -0.2, color: "white" };
+const subText2 = { marginTop: 2, fontSize: 12, opacity: 0.72 };
+const chev = { fontSize: 18, opacity: 0.8, fontWeight: 900 };
+
+const grid2 = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: 12,
+};
+
+const field = { display: "flex", flexDirection: "column", gap: 8 };
+
+const label = { fontWeight: 950, color: "white" };
+const hint = { fontSize: 12, opacity: 0.75 };
+
+const selectDark = {
+  padding: "12px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.55)",
+  color: "white",
+  fontWeight: 950,
+  width: "100%",
+};
+
+const inputDark = {
+  padding: "12px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.55)",
+  color: "white",
+  fontWeight: 950,
+  width: 130,
+};
+
+const codePill = {
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  color: "white",
+  fontWeight: 900,
+};
+
+const smallBtn = {
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.55)",
+  color: "white",
+  fontWeight: 950,
+};
+
+const smallPrimaryBtn = {
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(59,130,246,0.35)",
+  background: "rgba(59,130,246,0.18)",
+  color: "#dbeafe",
+  fontWeight: 950,
+};
+
+const cardDark = {
+  borderRadius: 16,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  padding: 12,
+};
+
+const cardTitle = { fontWeight: 950, marginBottom: 10, fontSize: 14, color: "white" };
+
+const pillStat = {
+  minWidth: 140,
+  borderRadius: 16,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.45)",
+  padding: 12,
+};
+
+const pillTop = { fontSize: 12, opacity: 0.75, fontWeight: 900 };
+const pillVal = { fontSize: 22, fontWeight: 1000, marginTop: 4, color: "white" };
+const pillBottom = { fontSize: 12, opacity: 0.7, marginTop: 2 };
+
+const winnersWrap = { flex: 1, minWidth: 240 };
+
+const togglePill = {
+  display: "flex",
+  gap: 12,
+  alignItems: "center",
+  padding: "12px 12px",
+  borderRadius: 16,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.45)",
+  userSelect: "none",
+};
+
+const tableWrap = { overflowX: "auto", WebkitOverflowScrolling: "touch" };
 
 const miniTable = {
   width: "100%",
@@ -719,8 +971,9 @@ const miniTable = {
 const miniTh = {
   textAlign: "center",
   padding: 8,
-  borderBottom: "1px solid #2a2a2a",
+  borderBottom: "1px solid rgba(148,163,184,0.14)",
   opacity: 0.85,
+  whiteSpace: "nowrap",
 };
 
 const miniThLeft = { ...miniTh, textAlign: "left" };
@@ -728,35 +981,36 @@ const miniThLeft = { ...miniTh, textAlign: "left" };
 const miniTd = {
   textAlign: "center",
   padding: 8,
-  borderBottom: "1px solid #1f1f1f",
+  borderBottom: "1px solid rgba(148,163,184,0.08)",
+  opacity: 0.95,
+  whiteSpace: "nowrap",
 };
 
-const miniTdLeft = { ...miniTd, textAlign: "left" };
+const miniTdLeft = { ...miniTd, textAlign: "left", whiteSpace: "nowrap" };
 
-const groupCard = {
-  border: "1px solid #2a2a2a",
+const groupCardBtn = {
+  width: "100%",
   borderRadius: 18,
-  padding: 14,
-  background: "#0f0f0f",
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  padding: 12,
+  textAlign: "left",
 };
 
-const toggleRow = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#0f0f0f",
+const openPill = {
+  padding: "8px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(59,130,246,0.35)",
+  background: "rgba(59,130,246,0.18)",
+  color: "#dbeafe",
+  fontWeight: 950,
 };
-
-const miniLabel = { fontSize: 12, fontWeight: 950, opacity: 0.7, marginBottom: 6 };
 
 const h2hStrip = {
   padding: 12,
   borderRadius: 16,
-  border: "1px solid #2a2a2a",
-  background: "linear-gradient(180deg, #0d0d0d 0%, #0a0a0a 100%)",
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.45)",
 };
 
 const h2hGrid = {
@@ -768,8 +1022,8 @@ const h2hGrid = {
 
 const h2hCell = {
   borderRadius: 14,
-  border: "1px solid #222",
-  background: "#0b0b0b",
+  border: "1px solid rgba(148,163,184,0.12)",
+  background: "rgba(2,6,23,0.35)",
   padding: 10,
   textAlign: "center",
 };
@@ -778,7 +1032,24 @@ const h2hHead = { opacity: 0.7, fontWeight: 950, fontSize: 12 };
 const h2hVal = (v) => ({
   marginTop: 6,
   fontWeight: 1000,
-  fontSize: 26,
+  fontSize: 22,
   letterSpacing: -0.4,
-  color: v > 0 ? "#86efac" : v < 0 ? "#fca5a5" : "#e5e7eb",
+  color: v > 0 ? "#22c55e" : v < 0 ? "#ef4444" : "#e5e7eb",
 });
+
+const fallbackCard = {
+  borderRadius: 18,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(2,6,23,0.35)",
+  padding: 16,
+};
+
+const btn = {
+  marginTop: 10,
+  padding: "10px 14px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.18)",
+  background: "rgba(15,23,42,0.55)",
+  color: "white",
+  fontWeight: 900,
+};

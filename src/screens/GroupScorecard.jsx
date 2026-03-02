@@ -37,18 +37,19 @@ const DEFAULT_STATE = {
   players: [],
   scores: {},
 
-  // Per-group settings
   groupSettings: { ...DEFAULT_GROUP_SETTINGS },
 
-  // Per-pair bets: { "p1|p2": { f9: 50, b9: 50, total: 50 } }
+  // per pair: { "p1|p2": { amount: 50 } }
   matchBets: {},
 
-  // Per-pair dobladas: { "p1|p2": { f9: false, b9: false } }
-  // We interpret checkbox as "doblada requested by current loser"
+  // per pair: { "p1|p2": { f9: false, b9: false } }  // checkbox free
   dobladas: {},
 
-  // Greens winners per par-3 hole number (1..18): { "3": "p2" }
+  // winners by par3 hole number as string: { "3": "p2" }
   greens: {},
+
+  // Bola Rosa winner (playerId)
+  bolaRosa: "",
 
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
@@ -63,7 +64,6 @@ export default function GroupScorecard() {
   const [state, setState] = useState(undefined);
   const [saving, setSaving] = useState(false);
 
-  // local score editing so color updates instantly
   const [editingScores, setEditingScores] = useState({}); // { [playerId]: { [holeIndex]: "value" } }
 
   const settingsRef = useMemo(() => {
@@ -91,6 +91,7 @@ export default function GroupScorecard() {
     return onSnapshot(groupRef, (snap) => setGroupMeta(snap.exists() ? snap.data() : null));
   }, [groupRef]);
 
+  // Listener + auto init + migration defaults
   useEffect(() => {
     if (!stateRef) return;
 
@@ -98,26 +99,27 @@ export default function GroupScorecard() {
       if (snap.exists()) {
         const data = snap.data();
 
-        // migration defaults
         const gs = data.groupSettings || {};
-        const nextGs = {
-          ...DEFAULT_GROUP_SETTINGS,
-          ...gs,
-        };
+        const nextGs = { ...DEFAULT_GROUP_SETTINGS, ...gs };
+
+        const migratedGreens = data.greens || data.greenies || {};
+        const migratedBolaRosa = typeof data.bolaRosa === "string" ? data.bolaRosa : "";
 
         const needsPatch =
           !data.groupSettings ||
+          !data.greens ||
+          !("bolaRosa" in data) ||
           nextGs.birdiePay !== gs.birdiePay ||
           nextGs.eaglePay !== gs.eaglePay ||
           nextGs.albatrossPay !== gs.albatrossPay ||
-          nextGs.greensPay !== gs.greensPay ||
-          !data.greens;
+          nextGs.greensPay !== gs.greensPay;
 
         if (needsPatch) {
           try {
             await updateDoc(stateRef, {
               groupSettings: nextGs,
-              greens: data.greens || data.greenies || {},
+              greens: migratedGreens,
+              bolaRosa: migratedBolaRosa,
               updatedAt: serverTimestamp(),
             });
           } catch {}
@@ -126,7 +128,8 @@ export default function GroupScorecard() {
         setState({
           ...data,
           groupSettings: nextGs,
-          greens: data.greens || data.greenies || {},
+          greens: migratedGreens,
+          bolaRosa: migratedBolaRosa,
         });
         return;
       }
@@ -143,7 +146,7 @@ export default function GroupScorecard() {
   }, [stateRef]);
 
   const courseId = settings?.courseId || "campestre-slp";
-  const hcpPercent = settings?.hcpPercent ?? 100;
+  const hcpPercent = settings?.hcpPercent ?? 100; // ONLY net + stableford
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
 
   const players = state?.players || [];
@@ -152,11 +155,12 @@ export default function GroupScorecard() {
   const matchBets = state?.matchBets || {};
   const dobladas = state?.dobladas || {};
   const greens = state?.greens || {};
+  const bolaRosa = state?.bolaRosa || "";
 
   const par3Holes = useMemo(() => {
     const out = [];
     for (let i = 0; i < course.parValues.length; i++) {
-      if (course.parValues[i] === 3) out.push(i + 1); // hole number 1..18
+      if (course.parValues[i] === 3) out.push(i + 1);
     }
     return out;
   }, [course.parValues]);
@@ -206,12 +210,15 @@ export default function GroupScorecard() {
       if (k.split("|").includes(playerId)) delete newDobladas[k];
     });
 
+    const newBolaRosa = bolaRosa === playerId ? "" : bolaRosa;
+
     await patchState({
       players: newPlayers,
       scores: newScores,
       greens: newGreens,
       matchBets: newMatchBets,
       dobladas: newDobladas,
+      bolaRosa: newBolaRosa,
     });
   };
 
@@ -262,11 +269,11 @@ export default function GroupScorecard() {
     await patchState({ greens: next });
   };
 
-  const setBet = async (aId, bId, field, raw) => {
+  const setBetAmount = async (aId, bId, raw) => {
     const key = pairKey(aId, bId);
     const n = Math.max(0, parseInt(raw || "0", 10));
-    const prev = matchBets[key] || { f9: 0, b9: 0, total: 0 };
-    await patchState({ matchBets: { ...matchBets, [key]: { ...prev, [field]: n } } });
+    const prev = matchBets[key] || { amount: 0 };
+    await patchState({ matchBets: { ...matchBets, [key]: { ...prev, amount: n } } });
   };
 
   const toggleDoblada = async (aId, bId, seg, checked) => {
@@ -275,11 +282,15 @@ export default function GroupScorecard() {
     await patchState({ dobladas: { ...dobladas, [key]: { ...prev, [seg]: !!checked } } });
   };
 
+  const setBolaRosa = async (playerIdOrEmpty) => {
+    await patchState({ bolaRosa: playerIdOrEmpty || "" });
+  };
+
   if (!sessionId || !groupId) return <div style={{ padding: 20 }}>Faltan parámetros.</div>;
   if (!groupMeta || state === undefined || !settings) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
   if (state === null) return <div style={{ padding: 20 }}>No pude crear state/main (revisa reglas).</div>;
 
-  // ===== Compute money inside group =====
+  // ===== Money inside group =====
   const bonusByPlayer = computeBonusMoneyByPlayer({
     players,
     scores,
@@ -293,11 +304,11 @@ export default function GroupScorecard() {
     greensPay: groupSettings.greensPay ?? 0,
   });
 
+  // MATCHES always 100% hcp diff (handled in compute.js)
   const matchesByPlayer = computeMatchesMoneyByPlayer({
     players,
     scores,
     courseId,
-    hcpPercent,
     matchBets,
     dobladas,
   });
@@ -323,7 +334,8 @@ export default function GroupScorecard() {
       const a = players[i];
       const b = players[j];
       const key = pairKey(a.id, b.id);
-      const bet = matchBets[key] || { f9: 0, b9: 0, total: 0 };
+
+      const bet = matchBets[key] || { amount: 0 };
       const dbl = dobladas[key] || { f9: false, b9: false };
 
       const pairRes = computeMatchResultForPair({
@@ -331,7 +343,6 @@ export default function GroupScorecard() {
         b,
         scores,
         courseId,
-        hcpPercent,
       });
 
       const money = calcMatchMoneyForPair({
@@ -353,12 +364,12 @@ export default function GroupScorecard() {
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>
             {groupMeta?.name || groupId}
           </h1>
+
           <div style={{ opacity: 0.8, marginTop: 6, fontSize: 13 }}>
-            Campo: <b>{course.name}</b> · %Hcp: <b>{hcpPercent}</b>
+            Campo: <b>{course.name}</b> · %Hcp (Net/STB): <b>{hcpPercent}</b> · Matches: <b>100%</b>
             {saving ? <span style={{ marginLeft: 10 }}>Guardando…</span> : null}
           </div>
 
-          {/* Per-group payouts */}
           <div style={payoutRow}>
             <PayoutInput label="Birdie" value={groupSettings.birdiePay ?? 0} onBlur={(v) => updateGroupSetting("birdiePay", v)} />
             <PayoutInput label="Eagle" value={groupSettings.eaglePay ?? 0} onBlur={(v) => updateGroupSetting("eaglePay", v)} />
@@ -374,13 +385,34 @@ export default function GroupScorecard() {
 
       <hr style={hr} />
 
-      {/* Greens section */}
+      {/* Greens + Bola Rosa */}
       <section style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Greens (Par 3)</h2>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0 }}>Greens (Par 3)</h2>
+
+          <div style={{ marginLeft: "auto", minWidth: 260 }}>
+            <div style={{ fontWeight: 900, marginBottom: 6 }}>Bola Rosa</div>
+            <select
+              value={bolaRosa}
+              onChange={(e) => setBolaRosa(e.target.value)}
+              style={select}
+              disabled={players.length === 0}
+            >
+              <option value="">— Sin ganador —</option>
+              {players.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
+              Solo tracking (si quieres, luego la metemos a dinero con monto).
+            </div>
+          </div>
+        </div>
+
         {players.length < 2 ? (
-          <div style={{ opacity: 0.7 }}>Agrega jugadores para seleccionar ganadores.</div>
+          <div style={{ opacity: 0.7, marginTop: 10 }}>Agrega jugadores para seleccionar ganadores.</div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
             {par3Holes.map((holeNumber) => (
               <div key={holeNumber} style={card}>
                 <div style={{ fontWeight: 900, marginBottom: 8 }}>
@@ -455,10 +487,12 @@ export default function GroupScorecard() {
           <tbody>
             {players.map((p) => {
               const arr = scores[p.id] || Array(18).fill("");
+
               const grossF9 = sumGross9(arr, 0);
               const grossB9 = sumGross9(arr, 9);
               const grossT = grossF9 + grossB9;
 
+              // Net/STB use % global
               const adj = buildHcpAdjustments(p.hcp || 0, hcpPercent, course.strokeIndexes);
               const netF9 = sumNet9(arr, adj, 0);
               const netB9 = sumNet9(arr, adj, 9);
@@ -467,6 +501,8 @@ export default function GroupScorecard() {
               const stbF9 = sumStableford9(arr, course.parValues, adj, 0);
               const stbB9 = sumStableford9(arr, course.parValues, adj, 9);
               const stbT = stbF9 + stbB9;
+
+              const effHcp = Math.round((p.hcp || 0) * (Number(hcpPercent) / 100));
 
               return (
                 <tr key={p.id} style={{ borderTop: "1px solid #2a2a2a" }}>
@@ -477,13 +513,18 @@ export default function GroupScorecard() {
                         onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
                         style={inputName}
                       />
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <input
                           type="number"
                           defaultValue={p.hcp}
                           onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
                           style={inputHcp}
                         />
+                        <span style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>
+                          eff {hcpPercent}%: <b>{effHcp}</b>
+                        </span>
+
                         <button onClick={() => removePlayer(p.id)} style={btnDanger}>
                           Quitar
                         </button>
@@ -552,15 +593,16 @@ export default function GroupScorecard() {
               <thead>
                 <tr>
                   <th style={thLeft}>Match</th>
-                  <th style={th}>Bet F9</th>
+                  <th style={th}>Bet</th>
                   <th style={th}>Doblada F9</th>
-                  <th style={th}>Bet B9</th>
                   <th style={th}>Doblada B9</th>
-                  <th style={th}>Bet Total</th>
                   <th style={th}>F9</th>
                   <th style={th}>B9</th>
                   <th style={th}>Total</th>
-                  <th style={th}>Money (A)</th>
+                  <th style={th}>$F9</th>
+                  <th style={th}>$B9</th>
+                  <th style={th}>$T</th>
+                  <th style={thStrong}>$Total</th>
                 </tr>
               </thead>
               <tbody>
@@ -573,16 +615,20 @@ export default function GroupScorecard() {
                     <tr key={m.key} style={{ borderTop: "1px solid #222" }}>
                       <td style={tdLeft}>
                         <b>{m.a.name}</b> vs <b>{m.b.name}</b>
+                        <div style={{ opacity: 0.65, fontSize: 12, marginTop: 4 }}>
+                          diff HCP: <b>{m.pairRes.diff}</b> (matches 100%)
+                        </div>
                       </td>
 
                       <td style={td}>
                         <input
                           type="number"
-                          defaultValue={m.bet.f9}
-                          onBlur={(e) => setBet(m.a.id, m.b.id, "f9", e.target.value)}
+                          defaultValue={m.bet.amount}
+                          onBlur={(e) => setBetAmount(m.a.id, m.b.id, e.target.value)}
                           style={inputBet}
                         />
                       </td>
+
                       <td style={td}>
                         <input
                           type="checkbox"
@@ -593,33 +639,20 @@ export default function GroupScorecard() {
 
                       <td style={td}>
                         <input
-                          type="number"
-                          defaultValue={m.bet.b9}
-                          onBlur={(e) => setBet(m.a.id, m.b.id, "b9", e.target.value)}
-                          style={inputBet}
-                        />
-                      </td>
-                      <td style={td}>
-                        <input
                           type="checkbox"
                           checked={!!m.dbl.b9}
                           onChange={(e) => toggleDoblada(m.a.id, m.b.id, "b9", e.target.checked)}
                         />
                       </td>
 
-                      <td style={td}>
-                        <input
-                          type="number"
-                          defaultValue={m.bet.total}
-                          onBlur={(e) => setBet(m.a.id, m.b.id, "total", e.target.value)}
-                          style={inputBet}
-                        />
-                      </td>
-
                       <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.front)}</td>
                       <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.back)}</td>
                       <td style={{ ...td, fontWeight: 900, color }}>{fmtMatch(m.pairRes.total)}</td>
-                      <td style={{ ...td, fontWeight: 900, color }}>{fmtMoney(m.money.moneyTotal)}</td>
+
+                      <td style={td}>{fmtMoney(m.money.moneyF9)}</td>
+                      <td style={td}>{fmtMoney(m.money.moneyB9)}</td>
+                      <td style={td}>{fmtMoney(m.money.moneyT)}</td>
+                      <td style={{ ...tdStrong, color }}>{fmtMoney(m.money.moneyTotal)}</td>
                     </tr>
                   );
                 })}
@@ -627,7 +660,7 @@ export default function GroupScorecard() {
             </table>
 
             <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
-              Doblada: checkbox activa “doblada pedida por el que va perdiendo” en ese segmento.
+              Doblada = multiplica x2 ese segmento (checkbox libre).
             </div>
           </div>
         )}
@@ -669,7 +702,7 @@ export default function GroupScorecard() {
             </table>
 
             <div style={{ opacity: 0.65, fontSize: 12, marginTop: 8 }}>
-              Bonus = (birdie/eagle/albatross) pagado por todos los demás del grupo por ocurrencia. Greens igual por Par 3.
+              Bonus y Greens son zero-sum dentro del grupo. Bola Rosa por ahora no entra a dinero.
             </div>
           </div>
         )}
@@ -744,12 +777,12 @@ const thLeft = { ...th, textAlign: "left" };
 const thMuted = { ...th, opacity: 0.7, fontWeight: 700, fontSize: 12 };
 const thStrong = { ...th, background: "#111827" };
 
-const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 220 };
+const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 260 };
 const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 2, textAlign: "left" };
 
 const td = { padding: 8, textAlign: "center", background: "#0f0f0f", color: "white" };
 const tdLeft = { ...td, textAlign: "left" };
-const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 220 };
+const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 260 };
 const tdStrong = { ...td, fontWeight: 900, background: "#0b1220" };
 const tdMutedCell = { ...td, opacity: 0.9, background: "#0b0b0b", fontWeight: 900 };
 

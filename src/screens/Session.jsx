@@ -1,3 +1,4 @@
+// src/screens/Session.jsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -25,28 +26,27 @@ import {
   computeEntryPrizes,
 } from "../lib/compute";
 
-const COURSES = [
-  { id: "campestre-slp", label: "Campestre de San Luis" },
-  { id: "la-loma", label: "La Loma Golf" },
-];
+const COURSES = Object.entries(COURSE_DATA).map(([id, c]) => ({
+  id,
+  label: c.name || id,
+}));
 
 export default function Session() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
 
   const [session, setSession] = useState(null);
-  const [settings, setSettings] = useState(null); // settings/main (entry fee + bola rosa enable)
+  const [settings, setSettings] = useState(null); // settings/main (entry fee + bolaRosaEnabled)
   const [groups, setGroups] = useState([]);
+  const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
 
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
   const [savingEntry, setSavingEntry] = useState(false);
-  const [savingBola, setSavingBola] = useState(false);
+  const [savingBolaRosa, setSavingBolaRosa] = useState(false);
 
-  const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
-
-  // Cross-group head to head
+  // Cross-group H2H
   const [h2hA, setH2hA] = useState("");
   const [h2hB, setH2hB] = useState("");
 
@@ -82,7 +82,6 @@ export default function Session() {
     if (!sessionId) return;
 
     const unsubs = [];
-
     groups.forEach((g) => {
       const ref = doc(db, "sessions", sessionId, "groups", g.id, "state", "main");
       const unsub = onSnapshot(ref, (snap) => {
@@ -96,9 +95,7 @@ export default function Session() {
   }, [sessionId, groups]);
 
   const courseId = session?.courseId || "campestre-slp";
-  const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const hcpPercent = session?.hcpPercent ?? 100;
-
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
 
@@ -118,15 +115,14 @@ export default function Session() {
     if (!snap.exists()) {
       await setDoc(
         ref,
-        { entryFee: 0, bolaRosaEnabled: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
+        {
+          entryFee: 0,
+          bolaRosaEnabled: false,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
         { merge: true }
       );
-    } else {
-      // migration: ensure bolaRosaEnabled exists
-      const data = snap.data() || {};
-      if (!("bolaRosaEnabled" in data)) {
-        await updateDoc(ref, { bolaRosaEnabled: false, updatedAt: serverTimestamp() });
-      }
     }
   };
 
@@ -172,7 +168,7 @@ export default function Session() {
 
   const toggleBolaRosa = async (checked) => {
     if (!sessionId) return;
-    setSavingBola(true);
+    setSavingBolaRosa(true);
     try {
       await ensureSettingsDoc();
       const ref = doc(db, "sessions", sessionId, "settings", "main");
@@ -181,7 +177,7 @@ export default function Session() {
       console.error(e);
       alert(e?.message || "No se pudo actualizar Bola Rosa");
     } finally {
-      setSavingBola(false);
+      setSavingBolaRosa(false);
     }
   };
 
@@ -216,9 +212,7 @@ export default function Session() {
     const settingsSnap = await getDoc(doc(db, "sessions", sessionId, "settings", "main"));
     const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
 
-    const groupsSnap = await getDocs(
-      query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc"))
-    );
+    const groupsSnap = await getDocs(query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc")));
     const groupsMeta = groupsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     const groupsFull = [];
@@ -241,6 +235,23 @@ export default function Session() {
       hcpPercent: snapshotHcpPercent,
     });
 
+    const matchesByGroup = {};
+    for (const g of groupsFull) {
+      const ps = g.players || [];
+      const sc = g.scores || {};
+      const res = [];
+
+      for (let i = 0; i < ps.length; i++) {
+        for (let j = i + 1; j < ps.length; j++) {
+          const a = ps[i];
+          const b = ps[j];
+          const r = computeMatchResultForPair({ a, b, scores: sc, courseId: snapshotCourseId });
+          res.push(r);
+        }
+      }
+      matchesByGroup[g.id] = res;
+    }
+
     const prizes = computeEntryPrizes({
       groupsFull,
       courseId: snapshotCourseId,
@@ -260,6 +271,7 @@ export default function Session() {
       computed: {
         leaderboardStableford: stablefordRows,
         leaderboardNet: netRows,
+        matchesByGroup,
         entryPrizes: prizes,
       },
     };
@@ -288,14 +300,14 @@ export default function Session() {
     return (
       <div style={page}>
         <h2>Falta Session ID</h2>
-        <button style={btn} onClick={() => navigate("/")}>Volver</button>
+        <button style={btn} onClick={() => navigate("/")}>
+          Volver
+        </button>
       </div>
     );
   }
 
   if (!session) return <div style={page}>Cargando sesión...</div>;
-
-  const courseLabel = (COURSES.find((c) => c.id === courseId)?.label) || courseId;
 
   // groupsFull from live map
   const groupsFull = groups.map((g) => ({
@@ -305,61 +317,53 @@ export default function Session() {
     ...(groupsStateMap[g.id] || {}),
   }));
 
-  const { stablefordRows, netRows } = computeLeaderboards({
-    groupsFull,
-    courseId,
-    hcpPercent,
-  });
+  const { stablefordRows, netRows } = computeLeaderboards({ groupsFull, courseId, hcpPercent });
+  const prizes = computeEntryPrizes({ groupsFull, courseId, hcpPercent, entryFee });
 
-  const prizes = computeEntryPrizes({
-    groupsFull,
-    courseId,
-    hcpPercent,
-    entryFee,
-  });
-
-  // Build flat players list across groups for H2H
-  const allPlayers = useMemo(() => {
-    const list = [];
-    for (const g of groupsFull) {
-      const ps = g.players || [];
-      const sc = g.scores || {};
-      for (const p of ps) {
-        const playerKey = `${g.id}|${p.id}`;
-        list.push({
-          playerKey,
-          groupId: g.id,
-          playerId: p.id,
-          name: p.name || p.id,
-          hcp: Number(p.hcp || 0),
-          scores: Array.isArray(sc[p.id]) ? sc[p.id] : Array(18).fill(""),
-        });
-      }
+  // Build list for cross-group H2H
+  const allPlayers = [];
+  for (const g of groupsFull) {
+    const ps = g.players || [];
+    for (const p of ps) {
+      allPlayers.push({
+        key: `${g.id}::${p.id}`,
+        groupId: g.id,
+        playerId: p.id,
+        name: p.name || p.id,
+        hcp: p.hcp || 0,
+      });
     }
-    // sort by group then name
-    return list.sort((a, b) => (a.groupId.localeCompare(b.groupId) || a.name.localeCompare(b.name)));
-  }, [groupsFull]);
+  }
 
-  const aObj = allPlayers.find((x) => x.playerKey === h2hA) || null;
-  const bObj = allPlayers.find((x) => x.playerKey === h2hB) || null;
+  const pickA = allPlayers.find((x) => x.key === h2hA) || null;
+  const pickB = allPlayers.find((x) => x.key === h2hB) || null;
 
-  const h2hResult = useMemo(() => {
-    if (!aObj || !bObj) return null;
-    if (aObj.playerKey === bObj.playerKey) return null;
+  let h2hRes = null;
+  if (pickA && pickB && pickA.key !== pickB.key) {
+    const gA = groupsFull.find((g) => g.id === pickA.groupId);
+    const gB = groupsFull.find((g) => g.id === pickB.groupId);
+    const scoresA = gA?.scores?.[pickA.playerId] || Array(18).fill("");
+    const scoresB = gB?.scores?.[pickB.playerId] || Array(18).fill("");
 
-    // computeMatchResultForPair expects a/b ids that exist in scores map
-    const a = { id: "a", name: aObj.name, hcp: aObj.hcp };
-    const b = { id: "b", name: bObj.name, hcp: bObj.hcp };
-    const scores = { a: aObj.scores, b: bObj.scores };
+    // Avoid ID collision across groups (p1/p2 repeats)
+    const a = { id: `A__${pickA.groupId}__${pickA.playerId}`, name: pickA.name, hcp: pickA.hcp };
+    const b = { id: `B__${pickB.groupId}__${pickB.playerId}`, name: pickB.name, hcp: pickB.hcp };
 
-    return computeMatchResultForPair({ a, b, scores, courseId });
-  }, [aObj, bObj, courseId]);
+    const scores = {
+      [a.id]: scoresA,
+      [b.id]: scoresB,
+    };
+
+    h2hRes = computeMatchResultForPair({ a, b, scores, courseId });
+  }
+
+  const courseLabel = (COURSES.find((c) => c.id === courseId)?.label) || courseId;
 
   return (
     <div style={page}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 280 }}>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900 }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 950, letterSpacing: -0.5 }}>
             {session.name || "Sesión"}
           </h1>
 
@@ -367,9 +371,9 @@ export default function Session() {
             Status: <b>{session.status || "live"}</b> · Campo: <b>{courseLabel}</b>
           </div>
 
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <code style={pillCode}>{sessionId}</code>
-            <button onClick={copySessionId} style={btn}>Copiar Session ID</button>
+            <button onClick={copySessionId} style={btn}>Copiar</button>
             <button onClick={saveHistory} disabled={savingHistory} style={btnPrimary}>
               {savingHistory ? "Guardando..." : "💾 Guardar Historial"}
             </button>
@@ -378,12 +382,7 @@ export default function Session() {
           {/* Campo + %Hcp */}
           <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>Campo:</div>
-            <select
-              value={courseId}
-              onChange={(e) => changeCourse(e.target.value)}
-              style={select}
-              disabled={savingCourse}
-            >
+            <select value={courseId} onChange={(e) => changeCourse(e.target.value)} style={select} disabled={savingCourse}>
               {COURSES.map((c) => (
                 <option key={c.id} value={c.id}>{c.label}</option>
               ))}
@@ -393,49 +392,38 @@ export default function Session() {
             <div style={{ width: 10 }} />
 
             <div style={{ fontWeight: 900 }}>% Handicap (Net/STB):</div>
-            <input
-              type="number"
-              defaultValue={hcpPercent}
-              onBlur={(e) => changeHcpPercent(e.target.value)}
-              style={inputSmall}
-            />
+            <input type="number" defaultValue={hcpPercent} onBlur={(e) => changeHcpPercent(e.target.value)} style={inputSmall} />
             <span style={{ opacity: 0.75 }}>matches siempre 100%</span>
           </div>
 
           {/* Entry Fee global */}
           <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>Entry (polla) por jugador:</div>
-            <input
-              type="number"
-              defaultValue={entryFee}
-              onBlur={(e) => changeEntryFee(e.target.value)}
-              style={inputSmall}
-            />
+            <input type="number" defaultValue={entryFee} onBlur={(e) => changeEntryFee(e.target.value)} style={inputSmall} />
             {savingEntry ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
             <span style={{ opacity: 0.75 }}>
               Pool: <b>${Math.round(prizes.pool)}</b> ({prizes.totalPlayers} jugadores)
             </span>
           </div>
 
-          {/* Bola Rosa enable */}
+          {/* Bola Rosa toggle */}
           <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <label style={checkRow}>
+            <label style={toggleRow}>
               <input
                 type="checkbox"
                 checked={bolaRosaEnabled}
                 onChange={(e) => toggleBolaRosa(e.target.checked)}
-                disabled={savingBola}
               />
-              <span style={{ fontWeight: 900 }}>Habilitar Bola Rosa (solo tracker)</span>
+              <span style={{ fontWeight: 900 }}>Habilitar Bola Rosa</span>
             </label>
-            {savingBola ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
+            {savingBolaRosa ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
           </div>
 
           {/* Winners */}
-          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          <div style={{ marginTop: 12 }}>
             <div style={card}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Premios Entry (50/30/20)</div>
-              <div style={{ opacity: 0.85, display: "flex", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 950, marginBottom: 6 }}>Premios Entry (50/30/20)</div>
+              <div style={{ opacity: 0.9, display: "flex", gap: 14, flexWrap: "wrap" }}>
                 <div>
                   🥇 STB 1º: <b>{prizes.winners.stableford1?.name || "-"}</b>{" "}
                   <span style={{ opacity: 0.75 }}>
@@ -460,68 +448,72 @@ export default function Session() {
               </div>
             </div>
           </div>
-
-          {/* Head to Head cross-group */}
-          <div style={{ marginTop: 12 }}>
-            <div style={card}>
-              <div style={{ fontWeight: 900, marginBottom: 8 }}>Head to Head (cualquier grupo)</div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div>
-                  <div style={miniLabel}>Jugador A</div>
-                  <select value={h2hA} onChange={(e) => setH2hA(e.target.value)} style={selectWide}>
-                    <option value="">— seleccionar —</option>
-                    {allPlayers.map((p) => (
-                      <option key={p.playerKey} value={p.playerKey}>
-                        {p.name} · ({p.groupId}) · HCP {p.hcp}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <div style={miniLabel}>Jugador B</div>
-                  <select value={h2hB} onChange={(e) => setH2hB(e.target.value)} style={selectWide}>
-                    <option value="">— seleccionar —</option>
-                    {allPlayers.map((p) => (
-                      <option key={p.playerKey} value={p.playerKey}>
-                        {p.name} · ({p.groupId}) · HCP {p.hcp}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {!h2hResult ? (
-                <div style={{ opacity: 0.7, marginTop: 10, fontSize: 12 }}>
-                  Selecciona 2 jugadores (pueden ser de grupos distintos).
-                </div>
-              ) : (
-                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                  <div style={pillH2H}>
-                    <div style={pillH2HTitle}>{aObj?.name} vs {bObj?.name}</div>
-                    <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
-                      diff HCP: <b>{h2hResult.diff}</b> (match 100%)
-                    </div>
-                  </div>
-
-                  <div style={strip}>
-                    <div style={stripH}>F9</div>
-                    <div style={stripH}>B9</div>
-                    <div style={stripH}>Total</div>
-
-                    <div style={stripV}>{fmtMatch(h2hResult.front)}</div>
-                    <div style={stripV}>{fmtMatch(h2hResult.back)}</div>
-                    <div style={stripV}>{fmtMatch(h2hResult.total)}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
         </div>
 
         <button onClick={() => navigate("/")} style={btn}>← Home</button>
       </div>
+
+      <hr style={hr} />
+
+      {/* Cross-group H2H */}
+      <section style={{ marginBottom: 18 }}>
+        <h2 style={{ margin: "0 0 8px 0" }}>Head-to-Head (cualquier jugador vs cualquier jugador)</h2>
+        <div style={card}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ minWidth: 240, flex: 1 }}>
+              <div style={miniLabel}>Player A</div>
+              <select value={h2hA} onChange={(e) => setH2hA(e.target.value)} style={selectWide}>
+                <option value="">— Selecciona —</option>
+                {allPlayers.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.name} · {p.groupId} · hcp {p.hcp}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ minWidth: 240, flex: 1 }}>
+              <div style={miniLabel}>Player B</div>
+              <select value={h2hB} onChange={(e) => setH2hB(e.target.value)} style={selectWide}>
+                <option value="">— Selecciona —</option>
+                {allPlayers.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.name} · {p.groupId} · hcp {p.hcp}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            {!h2hRes ? (
+              <div style={{ opacity: 0.75 }}>
+                Elige dos jugadores (pueden ser de grupos diferentes) y te calculo F9/B9/Total.
+              </div>
+            ) : (
+              <div style={h2hStrip}>
+                <div style={{ fontWeight: 950, marginBottom: 8 }}>
+                  {h2hRes.label} <span style={{ opacity: 0.7, fontWeight: 800 }}>· diff {h2hRes.diff}</span>
+                </div>
+                <div style={h2hGrid}>
+                  <div style={h2hCell}>
+                    <div style={h2hHead}>F9</div>
+                    <div style={h2hVal(h2hRes.front)}>{fmtMatch(h2hRes.front)}</div>
+                  </div>
+                  <div style={h2hCell}>
+                    <div style={h2hHead}>B9</div>
+                    <div style={h2hVal(h2hRes.back)}>{fmtMatch(h2hRes.back)}</div>
+                  </div>
+                  <div style={h2hCell}>
+                    <div style={h2hHead}>Total</div>
+                    <div style={h2hVal(h2hRes.total)}>{fmtMatch(h2hRes.total)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
 
       <hr style={hr} />
 
@@ -557,7 +549,7 @@ export default function Session() {
               </table>
             </div>
             <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-              Empate: gana el HCP menor (sube arriba).
+              Empate: gana el HCP menor.
             </div>
           </div>
 
@@ -588,7 +580,7 @@ export default function Session() {
               </table>
             </div>
             <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-              Empate: gana el HCP menor (sube arriba).
+              Empate: gana el HCP menor.
             </div>
           </div>
         </div>
@@ -596,7 +588,7 @@ export default function Session() {
 
       <hr style={hr} />
 
-      {/* Groups */}
+      {/* Groups (simple) */}
       <section>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Groups</h2>
@@ -626,16 +618,15 @@ export default function Session() {
 
 function GroupCard({ group, state, onOpen }) {
   const players = state?.players || [];
-
   return (
     <div style={groupCard}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontWeight: 900, fontSize: 18 }}>
+          <div style={{ fontWeight: 950, fontSize: 18 }}>
             {group.name || group.id}{" "}
-            <span style={{ opacity: 0.7, fontWeight: 700 }}>(order {group.order})</span>
+            <span style={{ opacity: 0.7, fontWeight: 800 }}>(order {group.order})</span>
           </div>
-          <div style={{ opacity: 0.75, marginTop: 6 }}>
+          <div style={{ opacity: 0.8, marginTop: 6 }}>
             Jugadores: <b>{players.length}</b> / 6
           </div>
         </div>
@@ -692,13 +683,9 @@ const select = {
 };
 
 const selectWide = {
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 900,
+  ...select,
   width: "100%",
+  minWidth: 0,
 };
 
 const inputSmall = {
@@ -751,49 +738,45 @@ const groupCard = {
   background: "#0f0f0f",
 };
 
-const checkRow = {
+const toggleRow = {
   display: "flex",
   alignItems: "center",
   gap: 10,
   padding: "10px 12px",
   borderRadius: 14,
   border: "1px solid #2a2a2a",
-  background: "#0b0b0b",
+  background: "#0f0f0f",
 };
 
-const miniLabel = { fontSize: 12, opacity: 0.7, fontWeight: 900 };
+const miniLabel = { fontSize: 12, fontWeight: 950, opacity: 0.7, marginBottom: 6 };
 
-const pillH2H = {
-  padding: "12px 14px",
-  borderRadius: 18,
+const h2hStrip = {
+  padding: 12,
+  borderRadius: 16,
   border: "1px solid #2a2a2a",
-  background: "linear-gradient(180deg, #0b0b0b 0%, #070707 100%)",
-  minWidth: 240,
+  background: "linear-gradient(180deg, #0d0d0d 0%, #0a0a0a 100%)",
 };
 
-const pillH2HTitle = { fontWeight: 950, fontSize: 14 };
-
-const strip = {
+const h2hGrid = {
   display: "grid",
   gridTemplateColumns: "repeat(3, 1fr)",
-  border: "1px solid #2a2a2a",
-  borderRadius: 18,
-  overflow: "hidden",
-  minWidth: 260,
+  gap: 10,
+  marginTop: 8,
 };
 
-const stripH = {
-  padding: "10px 10px",
-  textAlign: "center",
-  fontWeight: 950,
+const h2hCell = {
+  borderRadius: 14,
+  border: "1px solid #222",
   background: "#0b0b0b",
-  borderBottom: "1px solid #1f1f1f",
+  padding: 10,
+  textAlign: "center",
 };
 
-const stripV = {
-  padding: "14px 10px",
-  textAlign: "center",
+const h2hHead = { opacity: 0.7, fontWeight: 950, fontSize: 12 };
+const h2hVal = (v) => ({
+  marginTop: 6,
   fontWeight: 1000,
-  fontSize: 22,
-  background: "#070707",
-};
+  fontSize: 26,
+  letterSpacing: -0.4,
+  color: v > 0 ? "#86efac" : v < 0 ? "#fca5a5" : "#e5e7eb",
+});

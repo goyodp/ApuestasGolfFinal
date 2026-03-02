@@ -48,7 +48,6 @@ export default function Session() {
   const [savingEntry, setSavingEntry] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
 
-  // Live computed state
   const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
 
   const sessionRef = useMemo(() => {
@@ -61,7 +60,6 @@ export default function Session() {
     return doc(db, "sessions", sessionId, "settings", "main");
   }, [sessionId]);
 
-  // ---- session doc ----
   useEffect(() => {
     if (!sessionRef) return;
     return onSnapshot(sessionRef, (snap) => {
@@ -69,7 +67,6 @@ export default function Session() {
     });
   }, [sessionRef]);
 
-  // ---- settings/main (global) ----
   useEffect(() => {
     if (!settingsRef) return;
     return onSnapshot(settingsRef, (snap) => {
@@ -78,7 +75,6 @@ export default function Session() {
     });
   }, [settingsRef]);
 
-  // Auto-init settings/main if missing
   useEffect(() => {
     if (!settingsRef) return;
     (async () => {
@@ -97,7 +93,6 @@ export default function Session() {
     })();
   }, [settingsRef]);
 
-  // ---- groups meta ----
   useEffect(() => {
     if (!sessionId) return;
     const groupsRef = collection(db, "sessions", sessionId, "groups");
@@ -107,14 +102,12 @@ export default function Session() {
     });
   }, [sessionId]);
 
-  // ---- subscribe each group state/main (for leaderboard + player count) ----
   useEffect(() => {
     if (!sessionId) return;
 
     const unsubs = [];
     const groupIds = new Set(groups.map((g) => g.id));
 
-    // prune stale
     setGroupsStateMap((prev) => {
       const next = {};
       Object.keys(prev).forEach((gid) => {
@@ -235,7 +228,6 @@ export default function Session() {
     }
   };
 
-  // ---------- History snapshot ----------
   const buildSnapshot = async () => {
     const sessionSnap = await getDoc(doc(db, "sessions", sessionId));
     const sessionData = sessionSnap.exists() ? sessionSnap.data() : {};
@@ -322,7 +314,6 @@ export default function Session() {
 
   if (!session || !settings) return <div style={page}>Cargando sesión...</div>;
 
-  // Build groupsFull for compute
   const groupsFull = groups.map((g) => ({
     id: g.id,
     name: g.name || g.id,
@@ -368,7 +359,6 @@ export default function Session() {
           <button onClick={() => navigate("/")} style={btn}>← Home</button>
         </div>
 
-        {/* Global day settings */}
         <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ fontWeight: 900 }}>Campo:</div>
           <select
@@ -413,7 +403,6 @@ export default function Session() {
 
       <hr style={hr} />
 
-      {/* Prize pool summary */}
       <section style={{ marginBottom: 18 }}>
         <h2 style={{ margin: "0 0 8px 0" }}>Entry Pool (Global)</h2>
 
@@ -450,7 +439,6 @@ export default function Session() {
         </div>
       </section>
 
-      {/* Leaderboards */}
       <section style={{ marginBottom: 18 }}>
         <h2 style={{ margin: "0 0 8px 0" }}>Leaderboard (General)</h2>
 
@@ -521,7 +509,6 @@ export default function Session() {
 
       <hr style={hr} />
 
-      {/* Groups */}
       <section>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h2 style={{ margin: 0 }}>Groups</h2>
@@ -544,10 +531,6 @@ export default function Session() {
             ))
           )}
         </div>
-
-        <div style={{ opacity: 0.65, fontSize: 12, marginTop: 10 }}>
-          Nota: Birdies/Eagles/Albatross/Greenies y apuestas de matches son <b>por grupo</b>.
-        </div>
       </section>
     </div>
   );
@@ -555,8 +538,7 @@ export default function Session() {
 
 function GroupCard({ group, state, onOpen }) {
   const players = state?.players || [];
-  const greenieLabel = state?.groupSettings?.greenieLabel || state?.greenieLabel || "Greenie";
-
+  const greens = state?.greens || state?.greenies || {}; // compatibility
   return (
     <div style={groupCard}>
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -566,8 +548,7 @@ function GroupCard({ group, state, onOpen }) {
             <span style={{ opacity: 0.7, fontWeight: 700 }}>(order {group.order})</span>
           </div>
           <div style={{ opacity: 0.75, marginTop: 6 }}>
-            Jugadores: <b>{players.length}</b> / 6 · {greenieLabel}:{" "}
-            <b>{Object.keys(state?.greenies || {}).length}</b>
+            Jugadores: <b>{players.length}</b> / 6 · Greens capturados: <b>{Object.keys(greens || {}).length}</b>
           </div>
         </div>
         <button style={btnPrimary} onClick={onOpen}>Abrir Scorecard →</button>
@@ -576,134 +557,23 @@ function GroupCard({ group, state, onOpen }) {
   );
 }
 
-// ---------- styles ----------
-const page = {
-  padding: 16,
-  fontFamily: "system-ui",
-  maxWidth: 1100,
-  margin: "0 auto",
-  color: "white",
-};
-
-const stickyHeader = {
-  position: "sticky",
-  top: 0,
-  zIndex: 20,
-  background: "#0b0b0b",
-  paddingBottom: 10,
-  borderBottom: "1px solid #1f1f1f",
-};
-
+const page = { padding: 16, fontFamily: "system-ui", maxWidth: 1100, margin: "0 auto", color: "white" };
+const stickyHeader = { position: "sticky", top: 0, zIndex: 20, background: "#0b0b0b", paddingBottom: 10, borderBottom: "1px solid #1f1f1f" };
 const hr = { margin: "18px 0", borderColor: "#2a2a2a" };
-
-const pillCode = {
-  padding: "8px 12px",
-  borderRadius: 14,
-  background: "#0f0f0f",
-  border: "1px solid #2a2a2a",
-  color: "white",
-  fontWeight: 900,
-  maxWidth: "100%",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-};
-
-const btn = {
-  padding: "10px 14px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#141414",
-  color: "white",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-const btnPrimary = {
-  ...btn,
-  background: "#1f2937",
-  border: "1px solid #374151",
-};
-
-const select = {
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 900,
-  minWidth: 220,
-};
-
-const inputSmall = {
-  width: 110,
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid #2a2a2a",
-  background: "#111",
-  color: "white",
-  fontWeight: 900,
-};
-
-const card = {
-  border: "1px solid #2a2a2a",
-  borderRadius: 18,
-  padding: 14,
-  background: "#0f0f0f",
-};
-
+const pillCode = { padding: "8px 12px", borderRadius: 14, background: "#0f0f0f", border: "1px solid #2a2a2a", color: "white", fontWeight: 900, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" };
+const btn = { padding: "10px 14px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#141414", color: "white", fontWeight: 900, cursor: "pointer" };
+const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
+const select = { padding: "10px 12px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900, minWidth: 220 };
+const inputSmall = { width: 110, padding: "10px 12px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900 };
+const card = { border: "1px solid #2a2a2a", borderRadius: 18, padding: 14, background: "#0f0f0f" };
 const cardTitle = { fontWeight: 900, marginBottom: 10, fontSize: 16 };
-
-const miniTable = {
-  width: "100%",
-  borderCollapse: "collapse",
-  fontSize: 13,
-  minWidth: 520,
-};
-
-const miniTh = {
-  textAlign: "center",
-  padding: 8,
-  borderBottom: "1px solid #2a2a2a",
-  opacity: 0.85,
-  whiteSpace: "nowrap",
-};
-
+const miniTable = { width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 520 };
+const miniTh = { textAlign: "center", padding: 8, borderBottom: "1px solid #2a2a2a", opacity: 0.85, whiteSpace: "nowrap" };
 const miniThLeft = { ...miniTh, textAlign: "left" };
-
-const miniTd = {
-  textAlign: "center",
-  padding: 8,
-  borderBottom: "1px solid #1f1f1f",
-  whiteSpace: "nowrap",
-};
-
+const miniTd = { textAlign: "center", padding: 8, borderBottom: "1px solid #1f1f1f", whiteSpace: "nowrap" };
 const miniTdLeft = { ...miniTd, textAlign: "left", whiteSpace: "nowrap" };
-
-const groupCard = {
-  border: "1px solid #2a2a2a",
-  borderRadius: 18,
-  padding: 14,
-  background: "#0f0f0f",
-};
-
-const statPill = {
-  padding: "10px 12px",
-  borderRadius: 16,
-  border: "1px solid #242424",
-  background: "#0f0f0f",
-  minWidth: 150,
-};
-
+const groupCard = { border: "1px solid #2a2a2a", borderRadius: 18, padding: 14, background: "#0f0f0f" };
+const statPill = { padding: "10px 12px", borderRadius: 16, border: "1px solid #242424", background: "#0f0f0f", minWidth: 150 };
 const statLabel = { opacity: 0.75, fontSize: 12, fontWeight: 900 };
 const statValue = { fontWeight: 950, fontSize: 16 };
-
-const awardRow = {
-  display: "grid",
-  gridTemplateColumns: "1.1fr 2fr 0.7fr",
-  gap: 10,
-  alignItems: "center",
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid #222",
-  background: "#0f0f0f",
-};
+const awardRow = { display: "grid", gridTemplateColumns: "1.1fr 2fr 0.7fr", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: 14, border: "1px solid #222", background: "#0f0f0f" };

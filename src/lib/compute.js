@@ -38,13 +38,13 @@ export function playerKey(groupId, playerId) {
 }
 
 // =====================
-// Score category (for UI coloring)
+// Score category (UI colors)
 // =====================
 export function scoreCategory(gross, par) {
   const g = safeInt(gross);
   if (g === null) return "none";
   const d = g - (par ?? 4);
-  if (d <= -3) return "albatross"; // includes HIO vibe
+  if (d <= -3) return "albatross";
   if (d === -2) return "eagle";
   if (d === -1) return "birdie";
   if (d === 1) return "bogey";
@@ -87,7 +87,7 @@ export function buildMatchStrokesByHcpDiff100(hcpA, hcpB, strokeIndexes) {
 }
 
 // =====================
-// Totals
+// Totals helpers
 // =====================
 export function sumGross9(arr18, startIdx) {
   let t = 0;
@@ -180,15 +180,13 @@ export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
         });
       }
 
-      const pk = playerKey(g.id, p.id);
-
       stablefordRows.push({
         name: p.name || "",
         hcp: p.hcp || 0,
         stableford,
         groupId: g.id,
         playerId: p.id,
-        playerKey: pk,
+        playerKey: playerKey(g.id, p.id),
       });
 
       netRows.push({
@@ -197,7 +195,7 @@ export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
         net,
         groupId: g.id,
         playerId: p.id,
-        playerKey: pk,
+        playerKey: playerKey(g.id, p.id),
       });
     }
   }
@@ -209,7 +207,41 @@ export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
 }
 
 // =====================
-// Match play (Front/Back/Total) using HCP DIFF at 100%
+// Entry prizes (global polla)
+// - entryFee per player
+// - prize pool = entryFee * totalPlayers
+// - distribution: 50% 1st Stableford, 30% 2nd Stableford, 20% best Net (excluding previous two)
+// =====================
+export function computeEntryPrizes({ groupsFull, courseId, hcpPercent, entryFee }) {
+  const { stablefordRows, netRows } = computeLeaderboards({ groupsFull, courseId, hcpPercent });
+
+  const totalPlayers = stablefordRows.length;
+  const fee = toNum(entryFee);
+  const pool = Math.max(0, fee * totalPlayers);
+
+  const paid = {}; // playerKey => amount
+
+  const firstStb = stablefordRows[0] || null;
+  const secondStb = stablefordRows[1] || null;
+
+  if (firstStb) paid[firstStb.playerKey] = (paid[firstStb.playerKey] || 0) + pool * 0.5;
+  if (secondStb) paid[secondStb.playerKey] = (paid[secondStb.playerKey] || 0) + pool * 0.3;
+
+  const excluded = new Set([firstStb?.playerKey, secondStb?.playerKey].filter(Boolean));
+  const bestNet = netRows.find((r) => !excluded.has(r.playerKey)) || null;
+  if (bestNet) paid[bestNet.playerKey] = (paid[bestNet.playerKey] || 0) + pool * 0.2;
+
+  const winners = {
+    stableford1: firstStb,
+    stableford2: secondStb,
+    net1: bestNet,
+  };
+
+  return { pool, totalPlayers, entryFee: fee, winners, payoutsByPlayerKey: paid };
+}
+
+// =====================
+// Match play using 100% diff
 // =====================
 function holeResult(aAdj, bAdj) {
   if (aAdj < bAdj) return 1;
@@ -258,20 +290,18 @@ export function computeMatchResultForPair({ a, b, scores, courseId }) {
 }
 
 // =====================
-// Dobladas / Money
-// - checkbox is FREE: if enabled, it doubles that segment always (even if tied)
+// Money logic
+// - Doblada checkbox FREE: doubles segment always
+// - bet is single: { amount }
 // =====================
 function segmentMultiplier(dobladaEnabled) {
   return dobladaEnabled ? 2 : 1;
 }
 
 /**
- * matchBetsForPair = { amount }
- * dobladasForPair = { f9: boolean, b9: boolean }
- * money is returned from A perspective:
- *  + => A wins, - => A loses
+ * money is from A perspective
  */
-export function calcMatchMoneyForPair({ pairResult, aId, bId, matchBetsForPair, dobladasForPair }) {
+export function calcMatchMoneyForPair({ pairResult, matchBetsForPair, dobladasForPair }) {
   const bet = toNum(matchBetsForPair?.amount);
 
   const f9Mult = segmentMultiplier(!!dobladasForPair?.f9);
@@ -279,7 +309,7 @@ export function calcMatchMoneyForPair({ pairResult, aId, bId, matchBetsForPair, 
 
   const moneyF9 = pairResult.front === 0 ? 0 : Math.sign(pairResult.front) * bet * f9Mult;
   const moneyB9 = pairResult.back === 0 ? 0 : Math.sign(pairResult.back) * bet * b9Mult;
-  const moneyT  = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * bet;
+  const moneyT = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * bet;
 
   return {
     moneyF9,
@@ -291,8 +321,7 @@ export function calcMatchMoneyForPair({ pairResult, aId, bId, matchBetsForPair, 
 }
 
 // =====================
-// BONUS money by player (zero-sum)
-// - each birdie/eagle/albatross is paid by all others
+// Bonus by player (birdie/eagle/albatross) zero-sum
 // =====================
 export function computeBonusMoneyByPlayer({ players, scores, parValues, groupSettings }) {
   const n = players.length;
@@ -331,8 +360,7 @@ export function computeBonusMoneyByPlayer({ players, scores, parValues, groupSet
 }
 
 // =====================
-// GREENS money by player (zero-sum)
-// - per par3, selected winner gets +pay*(n-1), each other pays -pay
+// Greens by player (par3 winners) zero-sum
 // =====================
 export function computeGreensMoneyByPlayer({ players, greens, greensPay }) {
   const n = players.length;
@@ -354,7 +382,7 @@ export function computeGreensMoneyByPlayer({ players, greens, greensPay }) {
 }
 
 // =====================
-// MATCHES money by player (sum across pairs)
+// Matches money by player (sum across pairs) zero-sum
 // =====================
 export function computeMatchesMoneyByPlayer({ players, scores, courseId, matchBets, dobladas }) {
   const out = {};
@@ -372,8 +400,6 @@ export function computeMatchesMoneyByPlayer({ players, scores, courseId, matchBe
       const pairRes = computeMatchResultForPair({ a, b, scores, courseId });
       const money = calcMatchMoneyForPair({
         pairResult: pairRes,
-        aId: a.id,
-        bId: b.id,
         matchBetsForPair: bet,
         dobladasForPair: dbl,
       });
@@ -384,4 +410,19 @@ export function computeMatchesMoneyByPlayer({ players, scores, courseId, matchBe
   }
 
   return out;
+}
+
+// =====================
+// Formatting
+// =====================
+export function fmtMatch(v) {
+  if (v === 0) return "AS";
+  if (v > 0) return `+${v}`;
+  return `${v}`;
+}
+
+export function fmtMoney(n) {
+  const x = toNum(n);
+  if (x === 0) return "$0";
+  return x > 0 ? `+$${Math.round(x)}` : `-$${Math.abs(Math.round(x))}`;
 }

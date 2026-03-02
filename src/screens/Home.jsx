@@ -312,16 +312,13 @@ function AppleIcon() {
 
 // Styles
 const page = {
-  minHeight: "100vh",
-  paddingLeft: 16,
-  paddingRight: 16,
-  paddingBottom: 16,
-  paddingTop: "calc(env(safe-area-inset-top) + 18px)",
-  fontFamily: "system-ui",
+  minHeight: "100%",
+  paddingTop: "calc(14px + env(safe-area-inset-top))",
+  paddingBottom: "calc(14px + env(safe-area-inset-bottom))",
+  paddingLeft: "calc(14px + env(safe-area-inset-left))",
+  paddingRight: "calc(14px + env(safe-area-inset-right))",
   background: "#050505",
   color: "white",
-  maxWidth: 980,
-  margin: "0 auto",
 };
 const topBar = {
   display: "flex",

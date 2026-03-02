@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+// src/screens/GroupScorecard.jsx
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import html2canvas from "html2canvas";
 import { db } from "../firebase/db";
 import {
   COURSE_DATA,
@@ -15,6 +17,8 @@ import {
   computeBonusMoneyByPlayer,
   computeGreensMoneyByPlayer,
   computeMatchesMoneyByPlayer,
+  fmtMoney,
+  fmtMatch,
 } from "../lib/compute";
 
 function makePlayerId(existingIds = []) {
@@ -48,34 +52,17 @@ export default function GroupScorecard() {
   const { sessionId, groupId } = useParams();
   const navigate = useNavigate();
 
+  const [session, setSession] = useState(null); // <-- courseId/hcpPercent live here
+  const [settings, setSettings] = useState(null); // <-- bolaRosaEnabled lives here
   const [groupMeta, setGroupMeta] = useState(null);
-  const [settings, setSettings] = useState(null);
   const [state, setState] = useState(undefined);
   const [saving, setSaving] = useState(false);
-
   const [editingScores, setEditingScores] = useState({});
-  const [forceCompact, setForceCompact] = useState(false);
-  const [isLandscape, setIsLandscape] = useState(false);
+  const [screenshotMode, setScreenshotMode] = useState(false);
 
-  useEffect(() => {
-    const mq = window.matchMedia ? window.matchMedia("(orientation: landscape)") : null;
+  const captureRef = useRef(null);
 
-    const update = () => {
-      const landscape = mq ? mq.matches : window.innerWidth > window.innerHeight;
-      setIsLandscape(!!landscape);
-    };
-
-    update();
-    if (mq && mq.addEventListener) mq.addEventListener("change", update);
-    window.addEventListener("resize", update);
-
-    return () => {
-      if (mq && mq.removeEventListener) mq.removeEventListener("change", update);
-      window.removeEventListener("resize", update);
-    };
-  }, []);
-
-  const compact = forceCompact || isLandscape;
+  const sessionRef = useMemo(() => (sessionId ? doc(db, "sessions", sessionId) : null), [sessionId]);
 
   const settingsRef = useMemo(() => {
     if (!sessionId) return null;
@@ -93,6 +80,11 @@ export default function GroupScorecard() {
   }, [sessionId, groupId]);
 
   useEffect(() => {
+    if (!sessionRef) return;
+    return onSnapshot(sessionRef, (snap) => setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null));
+  }, [sessionRef]);
+
+  useEffect(() => {
     if (!settingsRef) return;
     return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
   }, [settingsRef]);
@@ -102,6 +94,7 @@ export default function GroupScorecard() {
     return onSnapshot(groupRef, (snap) => setGroupMeta(snap.exists() ? snap.data() : null));
   }, [groupRef]);
 
+  // Listener + auto init + migration defaults
   useEffect(() => {
     if (!stateRef) return;
 
@@ -155,11 +148,11 @@ export default function GroupScorecard() {
     return () => unsub();
   }, [stateRef]);
 
-  const courseId = settings?.courseId || "campestre-slp";
-  const hcpPercent = settings?.hcpPercent ?? 100;
-  const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
-
+  const courseId = session?.courseId || "campestre-slp";
+  const hcpPercent = session?.hcpPercent ?? 100;
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
+
+  const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
 
   const players = state?.players || [];
   const scores = state?.scores || {};
@@ -298,44 +291,42 @@ export default function GroupScorecard() {
     await patchState({ bolaRosa: playerIdOrEmpty || "" });
   };
 
+  const exportPNG = async () => {
+    const el = captureRef.current;
+    if (!el) return;
+
+    try {
+      const canvas = await html2canvas(el, {
+        scale: 2,
+        backgroundColor: null,
+        useCORS: true,
+      });
+
+      const dataUrl = canvas.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `${groupMeta?.name || groupId || "grupo"}_${sessionId || "session"}.png`;
+      a.click();
+    } catch (e) {
+      console.error(e);
+      alert("No pude exportar PNG. Revisa consola.");
+    }
+  };
+
   if (!sessionId || !groupId) return <div style={{ padding: 20 }}>Faltan parámetros.</div>;
-  if (!groupMeta || state === undefined || !settings) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
+  if (!groupMeta || state === undefined || !session) return <div style={{ padding: 20 }}>Cargando grupo...</div>;
   if (state === null) return <div style={{ padding: 20 }}>No pude crear state/main (revisa reglas).</div>;
 
   // ===== Money inside group =====
-  const bonusByPlayer = computeBonusMoneyByPlayer({
-    players,
-    scores,
-    parValues: course.parValues,
-    groupSettings,
-  });
-
-  const greensByPlayer = computeGreensMoneyByPlayer({
-    players,
-    greens,
-    greensPay: groupSettings.greensPay ?? 0,
-  });
-
-  const matchesByPlayer = computeMatchesMoneyByPlayer({
-    players,
-    scores,
-    courseId,
-    matchBets,
-    dobladas,
-  });
+  const bonusByPlayer = computeBonusMoneyByPlayer({ players, scores, parValues: course.parValues, groupSettings });
+  const greensByPlayer = computeGreensMoneyByPlayer({ players, greens, greensPay: groupSettings.greensPay ?? 0 });
+  const matchesByPlayer = computeMatchesMoneyByPlayer({ players, scores, courseId, matchBets, dobladas });
 
   const moneyRows = players.map((p) => {
     const bonus = bonusByPlayer[p.id] || 0;
     const g = greensByPlayer[p.id] || 0;
     const m = matchesByPlayer[p.id] || 0;
-    return {
-      id: p.id,
-      name: p.name || p.id,
-      matches: m,
-      greens: g,
-      bonus,
-      total: m + g + bonus,
-    };
+    return { id: p.id, name: p.name || p.id, matches: m, greens: g, bonus, total: m + g + bonus };
   });
 
   // ===== Build matches list for UI =====
@@ -349,20 +340,8 @@ export default function GroupScorecard() {
       const bet = matchBets[key] || { amount: 0 };
       const dbl = dobladas[key] || { f9: false, b9: false };
 
-      const pairRes = computeMatchResultForPair({
-        a,
-        b,
-        scores,
-        courseId,
-      });
-
-      const money = calcMatchMoneyForPair({
-        pairResult: pairRes,
-        aId: a.id,
-        bId: b.id,
-        matchBetsForPair: bet,
-        dobladasForPair: dbl,
-      });
+      const pairRes = computeMatchResultForPair({ a, b, scores, courseId });
+      const money = calcMatchMoneyForPair({ pairResult: pairRes, matchBetsForPair: bet, dobladasForPair: dbl });
 
       matchesList.push({ key, a, b, pairRes, bet, dbl, money });
     }
@@ -370,6 +349,13 @@ export default function GroupScorecard() {
 
   return (
     <div style={page}>
+      <style>{`
+        @media (orientation: landscape) {
+          .ag-tight { padding: 10px !important; }
+          .ag-table { min-width: 980px !important; }
+        }
+      `}</style>
+
       <div style={header}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
@@ -381,319 +367,305 @@ export default function GroupScorecard() {
             {saving ? <span style={{ marginLeft: 10 }}>Guardando…</span> : null}
           </div>
 
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button
-              onClick={() => setForceCompact((v) => !v)}
-              style={btn}
-              title="Ideal para screenshots (también se activa automático en landscape)"
-            >
-              {compact ? "✅ Modo Screenshot" : "📸 Modo Screenshot"}
-            </button>
-
-            <div style={{ opacity: 0.75, fontSize: 12, alignSelf: "center" }}>
-              Tip: para screenshot completo, gira el cel a horizontal.
-            </div>
-          </div>
-
-          <div style={payoutRow}>
-            <PayoutInput
-              label="Birdie"
-              value={groupSettings.birdiePay ?? 0}
-              onBlur={(v) => updateGroupSetting("birdiePay", v)}
-            />
-            <PayoutInput
-              label="Eagle"
-              value={groupSettings.eaglePay ?? 0}
-              onBlur={(v) => updateGroupSetting("eaglePay", v)}
-            />
-            <PayoutInput
-              label="Albatross/HIO"
-              value={groupSettings.albatrossPay ?? 0}
-              onBlur={(v) => updateGroupSetting("albatrossPay", v)}
-            />
-            <PayoutInput
-              label="Greens"
-              value={groupSettings.greensPay ?? 0}
-              onBlur={(v) => updateGroupSetting("greensPay", v)}
-            />
-          </div>
-        </div>
-
-        <button onClick={() => navigate(`/session/${sessionId}`)} style={btn}>
-          ← Volver
-        </button>
-      </div>
-
-      <hr style={hr} />
-
-      {/* Greens + Bola Rosa */}
-      <section style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <h2 style={{ margin: 0 }}>Greens (Par 3)</h2>
-
-          {bolaRosaEnabled ? (
-            <div style={{ marginLeft: "auto", minWidth: 260 }}>
-              <div style={{ fontWeight: 950, marginBottom: 6 }}>Bola Rosa</div>
-              <select
-                value={bolaRosa}
-                onChange={(e) => setBolaRosa(e.target.value)}
-                style={select}
-                disabled={players.length === 0}
-              >
-                <option value="">— Sin ganador —</option>
-                {players.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
+          {!screenshotMode ? (
+            <div style={payoutRow}>
+              <PayoutInput label="Birdie" value={groupSettings.birdiePay ?? 0} onBlur={(v) => updateGroupSetting("birdiePay", v)} />
+              <PayoutInput label="Eagle" value={groupSettings.eaglePay ?? 0} onBlur={(v) => updateGroupSetting("eaglePay", v)} />
+              <PayoutInput label="Albatross/HIO" value={groupSettings.albatrossPay ?? 0} onBlur={(v) => updateGroupSetting("albatrossPay", v)} />
+              <PayoutInput label="Greens" value={groupSettings.greensPay ?? 0} onBlur={(v) => updateGroupSetting("greensPay", v)} />
             </div>
           ) : null}
         </div>
 
-        {players.length < 2 ? (
-          <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega jugadores para seleccionar ganadores.</div>
-        ) : (
-          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-            {par3Holes.map((holeNumber) => (
-              <div key={holeNumber} style={card}>
-                <div style={{ fontWeight: 950, marginBottom: 8 }}>
-                  Hoyo {holeNumber} (Par 3)
-                </div>
-                <select
-                  value={greens[String(holeNumber)] || ""}
-                  onChange={(e) => setGreenWinner(holeNumber, e.target.value)}
-                  style={select}
-                >
-                  <option value="">— Sin ganador —</option>
-                  {players.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <div style={{ opacity: 0.72, fontSize: 12, marginTop: 8 }}>
-                  El ganador cobra <b>${groupSettings.greensPay}</b> a cada jugador del grupo.
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <hr style={hr} />
-
-      <button onClick={addPlayer} disabled={players.length >= 6} style={btnPrimary}>
-        + Agregar jugador ({players.length}/6)
-      </button>
-
-      {/* Score table */}
-      <div style={{ marginTop: 14, overflowX: "auto", borderRadius: 18 }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: compact ? 980 : 1100 }}>
-          <thead>
-            <tr>
-              <th style={{ ...thSticky, minWidth: compact ? 220 : 260 }}>Jugador</th>
-
-              {Array.from({ length: 9 }).map((_, i) => (
-                <th key={`f-${i}`} style={th}>{i + 1}</th>
-              ))}
-              <th style={thStrong}>F9</th>
-
-              {Array.from({ length: 9 }).map((_, i) => (
-                <th key={`b-${i}`} style={th}>{i + 10}</th>
-              ))}
-              <th style={thStrong}>B9</th>
-
-              <th style={thStrong}>Tot</th>
-              <th style={thMuted}>Net</th>
-              <th style={thMuted}>STB</th>
-            </tr>
-
-            <tr>
-              <th style={thStickySmall}>Hcp</th>
-
-              {course.parValues.slice(0, 9).map((p, i) => (
-                <th key={`pf-${i}`} style={thMuted}>Par {p}</th>
-              ))}
-              <th style={thMuted}></th>
-
-              {course.parValues.slice(9).map((p, i) => (
-                <th key={`pb-${i}`} style={thMuted}>Par {p}</th>
-              ))}
-              <th style={thMuted}></th>
-
-              <th style={thMuted}></th>
-              <th style={thMuted}></th>
-              <th style={thMuted}></th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {players.map((p) => {
-              const arr = scores[p.id] || Array(18).fill("");
-
-              const grossF9 = sumGross9(arr, 0);
-              const grossB9 = sumGross9(arr, 9);
-              const grossT = grossF9 + grossB9;
-
-              const adj = buildHcpAdjustments(p.hcp || 0, hcpPercent, course.strokeIndexes);
-              const netF9 = sumNet9(arr, adj, 0);
-              const netB9 = sumNet9(arr, adj, 9);
-              const netT = netF9 + netB9;
-
-              const stbF9 = sumStableford9(arr, course.parValues, adj, 0);
-              const stbB9 = sumStableford9(arr, course.parValues, adj, 9);
-              const stbT = stbF9 + stbB9;
-
-              const effHcp = Math.round((p.hcp || 0) * (Number(hcpPercent) / 100));
-
-              return (
-                <tr key={p.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-                  <td style={{ ...tdSticky, minWidth: compact ? 220 : 260 }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 4 : 6 }}>
-                      <input
-                        defaultValue={p.name}
-                        onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
-                        style={{ ...inputName, padding: compact ? "8px 10px" : "10px 10px" }}
-                      />
-
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                        <input
-                          type="number"
-                          defaultValue={p.hcp}
-                          onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
-                          style={{ ...inputHcp, width: compact ? 70 : 86, padding: compact ? "7px 10px" : "8px 10px" }}
-                        />
-                        <span style={{ fontSize: 12, opacity: 0.78, fontWeight: 900 }}>
-                          eff {hcpPercent}%: <b>{effHcp}</b>
-                        </span>
-
-                        <button onClick={() => removePlayer(p.id)} style={btnDanger}>
-                          Quitar
-                        </button>
-                      </div>
-                    </div>
-                  </td>
-
-                  {Array.from({ length: 9 }).map((_, h) => {
-                    const shown =
-                      editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : (arr[h] ?? "");
-                    const cat = scoreCategory(shown, course.parValues[h]);
-                    return (
-                      <td key={`sf-${p.id}-${h}`} style={td}>
-                        <input
-                          inputMode="numeric"
-                          value={shown}
-                          onChange={(e) => onScoreChange(p.id, h, e.target.value)}
-                          onBlur={() => onScoreBlur(p.id, h)}
-                          style={{
-                            ...inputScore,
-                            width: compact ? 38 : 44,
-                            height: compact ? 38 : 44,
-                            borderRadius: compact ? 10 : 12,
-                            ...scoreStyle(cat),
-                          }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={tdStrong}>{grossF9 || ""}</td>
-
-                  {Array.from({ length: 9 }).map((_, i) => {
-                    const h = i + 9;
-                    const shown =
-                      editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : (arr[h] ?? "");
-                    const cat = scoreCategory(shown, course.parValues[h]);
-                    return (
-                      <td key={`sb-${p.id}-${h}`} style={td}>
-                        <input
-                          inputMode="numeric"
-                          value={shown}
-                          onChange={(e) => onScoreChange(p.id, h, e.target.value)}
-                          onBlur={() => onScoreBlur(p.id, h)}
-                          style={{
-                            ...inputScore,
-                            width: compact ? 38 : 44,
-                            height: compact ? 38 : 44,
-                            borderRadius: compact ? 10 : 12,
-                            ...scoreStyle(cat),
-                          }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={tdStrong}>{grossB9 || ""}</td>
-
-                  <td style={tdStrong}>{grossT || ""}</td>
-                  <td style={tdMutedCell}>{netT || ""}</td>
-                  <td style={tdMutedCell}>{stbT || ""}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button onClick={() => setScreenshotMode((s) => !s)} style={btn}>
+            {screenshotMode ? "Salir Screenshot" : "Modo Screenshot"}
+          </button>
+          <button onClick={exportPNG} style={btnPrimary}>
+            Export PNG
+          </button>
+          <button onClick={() => navigate(`/session/${sessionId}`)} style={btn}>
+            ← Volver
+          </button>
+        </div>
       </div>
 
       <hr style={hr} />
 
-      {/* Matches */}
-      <section style={{ marginBottom: 18 }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <h2 style={{ margin: 0 }}>Matches</h2>
-          <div style={{ opacity: 0.7, fontSize: 12 }}>
-            Bet = 1 monto · Doblada libre (x2 por segmento) · Solo mostramos <b>$Total</b>
-          </div>
-        </div>
+      {/* CAPTURE AREA (para png) */}
+      <div ref={captureRef} className="ag-tight">
+        {/* Greens + Bola Rosa */}
+        {!screenshotMode ? (
+          <section style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <h2 style={{ margin: 0 }}>Greens (Par 3)</h2>
 
-        {players.length < 2 ? (
-          <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega al menos 2 jugadores.</div>
-        ) : (
-          <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-            {matchesList.map((m) => (
-              <MatchCard
-                key={m.key}
-                m={m}
-                onBet={(raw) => setBetAmount(m.a.id, m.b.id, raw)}
-                onDbl={(seg, checked) => toggleDoblada(m.a.id, m.b.id, seg, checked)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+              {bolaRosaEnabled ? (
+                <div style={{ marginLeft: "auto", minWidth: 260 }}>
+                  <div style={{ fontWeight: 950, marginBottom: 6 }}>Bola Rosa</div>
+                  <select
+                    value={bolaRosa}
+                    onChange={(e) => setBolaRosa(e.target.value)}
+                    style={select}
+                    disabled={players.length === 0}
+                  >
+                    <option value="">— Sin ganador —</option>
+                    {players.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </div>
 
-      <hr style={hr} />
-
-      {/* Money by player */}
-      <section style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Totales por jugador (grupo)</h2>
-
-        {players.length === 0 ? (
-          <div style={{ opacity: 0.75 }}>Agrega jugadores.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
-              <thead>
-                <tr>
-                  <th style={thLeft}>Jugador</th>
-                  <th style={th}>Matches</th>
-                  <th style={th}>Greens</th>
-                  <th style={th}>Birdie/Eagle/Alb</th>
-                  <th style={thStrong}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {moneyRows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-                    <td style={tdLeft}><b>{r.name}</b></td>
-                    <td style={td}>{fmtMoney(r.matches)}</td>
-                    <td style={td}>{fmtMoney(r.greens)}</td>
-                    <td style={td}>{fmtMoney(r.bonus)}</td>
-                    <td style={{ ...tdStrong, color: r.total > 0 ? "#16a34a" : r.total < 0 ? "#dc2626" : "#0f172a" }}>
-                      {fmtMoney(r.total)}
-                    </td>
-                  </tr>
+            {players.length < 2 ? (
+              <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega jugadores para seleccionar ganadores.</div>
+            ) : (
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                {par3Holes.map((holeNumber) => (
+                  <div key={holeNumber} style={card}>
+                    <div style={{ fontWeight: 950, marginBottom: 8 }}>
+                      Hoyo {holeNumber} (Par 3)
+                    </div>
+                    <select
+                      value={greens[String(holeNumber)] || ""}
+                      onChange={(e) => setGreenWinner(holeNumber, e.target.value)}
+                      style={select}
+                    >
+                      <option value="">— Sin ganador —</option>
+                      {players.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <div style={{ opacity: 0.72, fontSize: 12, marginTop: 8 }}>
+                      El ganador cobra <b>${groupSettings.greensPay}</b> a cada jugador del grupo.
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {!screenshotMode ? <hr style={hr} /> : null}
+
+        {!screenshotMode ? (
+          <button onClick={addPlayer} disabled={players.length >= 6} style={btnPrimary}>
+            + Agregar jugador ({players.length}/6)
+          </button>
+        ) : null}
+
+        {/* Score table */}
+        <div style={{ marginTop: screenshotMode ? 0 : 14, overflowX: "auto", borderRadius: 18 }}>
+          <table className="ag-table" style={{ borderCollapse: "collapse", width: "100%", minWidth: 1100 }}>
+            <thead>
+              <tr>
+                <th style={thSticky}>Jugador</th>
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <th key={`f-${i}`} style={th}>{i + 1}</th>
+                ))}
+                <th style={thStrong}>F9</th>
+
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <th key={`b-${i}`} style={th}>{i + 10}</th>
+                ))}
+                <th style={thStrong}>B9</th>
+
+                <th style={thStrong}>Tot</th>
+                <th style={thMuted}>Net</th>
+                <th style={thMuted}>STB</th>
+              </tr>
+
+              <tr>
+                <th style={thStickySmall}>Hcp</th>
+
+                {course.parValues.slice(0, 9).map((p, i) => (
+                  <th key={`pf-${i}`} style={thMuted}>Par {p}</th>
+                ))}
+                <th style={thMuted}></th>
+
+                {course.parValues.slice(9).map((p, i) => (
+                  <th key={`pb-${i}`} style={thMuted}>Par {p}</th>
+                ))}
+                <th style={thMuted}></th>
+
+                <th style={thMuted}></th>
+                <th style={thMuted}></th>
+                <th style={thMuted}></th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {players.map((p) => {
+                const arr = scores[p.id] || Array(18).fill("");
+
+                const grossF9 = sumGross9(arr, 0);
+                const grossB9 = sumGross9(arr, 9);
+                const grossT = grossF9 + grossB9;
+
+                const adj = buildHcpAdjustments(p.hcp || 0, hcpPercent, course.strokeIndexes);
+                const netF9 = sumNet9(arr, adj, 0);
+                const netB9 = sumNet9(arr, adj, 9);
+                const netT = netF9 + netB9;
+
+                const stbF9 = sumStableford9(arr, course.parValues, adj, 0);
+                const stbB9 = sumStableford9(arr, course.parValues, adj, 9);
+                const stbT = stbF9 + stbB9;
+
+                const effHcp = Math.round((p.hcp || 0) * (Number(hcpPercent) / 100));
+
+                return (
+                  <tr key={p.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                    <td style={tdSticky}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <input
+                          defaultValue={p.name}
+                          onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
+                          style={inputName}
+                          disabled={screenshotMode}
+                        />
+
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <input
+                            type="number"
+                            defaultValue={p.hcp}
+                            onBlur={(e) => updatePlayer(p.id, "hcp", parseFloat(e.target.value || "0"))}
+                            style={inputHcp}
+                            disabled={screenshotMode}
+                          />
+                          <span style={{ fontSize: 12, opacity: 0.78, fontWeight: 950 }}>
+                            eff {hcpPercent}%: <b>{effHcp}</b>
+                          </span>
+
+                          {!screenshotMode ? (
+                            <button onClick={() => removePlayer(p.id)} style={btnDanger}>
+                              Quitar
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+
+                    {Array.from({ length: 9 }).map((_, h) => {
+                      const shown = editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : (arr[h] ?? "");
+                      const cat = scoreCategory(shown, course.parValues[h]);
+                      return (
+                        <td key={`sf-${p.id}-${h}`} style={td}>
+                          <input
+                            inputMode="numeric"
+                            value={shown}
+                            onChange={(e) => onScoreChange(p.id, h, e.target.value)}
+                            onBlur={() => onScoreBlur(p.id, h)}
+                            style={{ ...inputScore, ...scoreStyle(cat) }}
+                            disabled={screenshotMode}
+                          />
+                        </td>
+                      );
+                    })}
+                    <td style={tdStrong}>{grossF9 || ""}</td>
+
+                    {Array.from({ length: 9 }).map((_, i) => {
+                      const h = i + 9;
+                      const shown = editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : (arr[h] ?? "");
+                      const cat = scoreCategory(shown, course.parValues[h]);
+                      return (
+                        <td key={`sb-${p.id}-${h}`} style={td}>
+                          <input
+                            inputMode="numeric"
+                            value={shown}
+                            onChange={(e) => onScoreChange(p.id, h, e.target.value)}
+                            onBlur={() => onScoreBlur(p.id, h)}
+                            style={{ ...inputScore, ...scoreStyle(cat) }}
+                            disabled={screenshotMode}
+                          />
+                        </td>
+                      );
+                    })}
+                    <td style={tdStrong}>{grossB9 || ""}</td>
+
+                    <td style={tdStrong}>{grossT || ""}</td>
+                    <td style={tdMutedCell}>{netT || ""}</td>
+                    <td style={tdMutedCell}>{stbT || ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* abajo: matches y dinero NO entran al screenshot mode */}
+      {!screenshotMode ? (
+        <>
+          <hr style={hr} />
+
+          <section style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <h2 style={{ margin: 0 }}>Matches</h2>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>
+                Bet = 1 monto · Doblada libre (x2 por segmento) · Solo mostramos <b>$Total</b>
+              </div>
+            </div>
+
+            {players.length < 2 ? (
+              <div style={{ opacity: 0.75, marginTop: 10 }}>Agrega al menos 2 jugadores.</div>
+            ) : (
+              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                {matchesList.map((m) => (
+                  <MatchCard
+                    key={m.key}
+                    m={m}
+                    onBet={(raw) => setBetAmount(m.a.id, m.b.id, raw)}
+                    onDbl={(seg, checked) => toggleDoblada(m.a.id, m.b.id, seg, checked)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <hr style={hr} />
+
+          <section style={{ marginBottom: 20 }}>
+            <h2 style={{ margin: "0 0 8px 0" }}>Totales por jugador (grupo)</h2>
+
+            {players.length === 0 ? (
+              <div style={{ opacity: 0.75 }}>Agrega jugadores.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
+                  <thead>
+                    <tr>
+                      <th style={thLeft}>Jugador</th>
+                      <th style={th}>Matches</th>
+                      <th style={th}>Greens</th>
+                      <th style={th}>Birdie/Eagle/Alb</th>
+                      <th style={thStrong}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {moneyRows.map((r) => (
+                      <tr key={r.id} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                        <td style={tdLeft}><b>{r.name}</b></td>
+                        <td style={td}>{fmtMoney(r.matches)}</td>
+                        <td style={td}>{fmtMoney(r.greens)}</td>
+                        <td style={td}>{fmtMoney(r.bonus)}</td>
+                        <td
+                          style={{
+                            ...tdStrong,
+                            color: r.total > 0 ? "#16a34a" : r.total < 0 ? "#dc2626" : "#0f172a",
+                          }}
+                        >
+                          {fmtMoney(r.total)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -718,7 +690,7 @@ function MatchCard({ m, onBet, onDbl }) {
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <div style={miniField}>
-            <div style={miniLabel}>Bet</div>
+            <div style={miniLabel2}>Bet</div>
             <input
               type="number"
               defaultValue={m.bet.amount}
@@ -729,20 +701,12 @@ function MatchCard({ m, onBet, onDbl }) {
           </div>
 
           <label style={checkPill}>
-            <input
-              type="checkbox"
-              checked={!!m.dbl.f9}
-              onChange={(e) => onDbl("f9", e.target.checked)}
-            />
+            <input type="checkbox" checked={!!m.dbl.f9} onChange={(e) => onDbl("f9", e.target.checked)} />
             <span style={{ fontWeight: 900 }}>Doblada F9</span>
           </label>
 
           <label style={checkPill}>
-            <input
-              type="checkbox"
-              checked={!!m.dbl.b9}
-              onChange={(e) => onDbl("b9", e.target.checked)}
-            />
+            <input type="checkbox" checked={!!m.dbl.b9} onChange={(e) => onDbl("b9", e.target.checked)} />
             <span style={{ fontWeight: 900 }}>Doblada B9</span>
           </label>
         </div>
@@ -775,13 +739,7 @@ function PayoutInput({ label, value, onBlur }) {
   return (
     <div style={pill}>
       <div style={pillLabel}>{label}</div>
-      <input
-        type="number"
-        defaultValue={value}
-        onBlur={(e) => onBlur(e.target.value)}
-        style={pillInput}
-        inputMode="numeric"
-      />
+      <input type="number" defaultValue={value} onBlur={(e) => onBlur(e.target.value)} style={pillInput} inputMode="numeric" />
     </div>
   );
 }
@@ -793,17 +751,6 @@ function scoreStyle(cat) {
   if (cat === "bogey") return { borderColor: "#60a5fa", background: "rgba(96,165,250,0.12)" };
   if (cat === "double") return { borderColor: "#ef4444", background: "rgba(239,68,68,0.12)" };
   return {};
-}
-
-function fmtMatch(v) {
-  if (v === 0) return "AS";
-  if (v > 0) return `+${v}`;
-  return `${v}`;
-}
-function fmtMoney(n) {
-  const x = Number(n || 0);
-  if (x === 0) return "$0";
-  return x > 0 ? `+$${Math.round(x)}` : `-$${Math.abs(Math.round(x))}`;
 }
 
 // ---------- styles ----------
@@ -886,12 +833,12 @@ const thLeft = { ...th, textAlign: "left" };
 const thMuted = { ...th, opacity: 0.75, fontWeight: 800, fontSize: 12 };
 const thStrong = { ...th, background: "rgba(59,130,246,0.12)" };
 
-const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", background: "rgba(248,250,252,0.95)" };
+const thSticky = { ...th, position: "sticky", left: 0, zIndex: 2, textAlign: "left", minWidth: 260, background: "rgba(248,250,252,0.95)" };
 const thStickySmall = { ...thMuted, position: "sticky", left: 0, zIndex: 2, textAlign: "left", background: "rgba(248,250,252,0.95)" };
 
 const td = { padding: 8, textAlign: "center", background: "rgba(255,255,255,0.55)", color: "#0f172a" };
 const tdLeft = { ...td, textAlign: "left" };
-const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", background: "rgba(248,250,252,0.92)" };
+const tdSticky = { ...td, position: "sticky", left: 0, zIndex: 1, textAlign: "left", minWidth: 260, background: "rgba(248,250,252,0.92)" };
 const tdStrong = { ...td, fontWeight: 950, background: "rgba(59,130,246,0.10)" };
 const tdMutedCell = { ...td, opacity: 0.95, background: "rgba(15,23,42,0.04)", fontWeight: 950 };
 
@@ -970,7 +917,7 @@ const miniField = {
   padding: "10px 12px",
 };
 
-const miniLabel = { fontSize: 12, fontWeight: 950, opacity: 0.7 };
+const miniLabel2 = { fontSize: 12, fontWeight: 950, opacity: 0.7 };
 const miniInput = {
   marginTop: 6,
   width: "100%",

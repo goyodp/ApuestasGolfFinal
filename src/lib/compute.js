@@ -55,52 +55,60 @@ export function scoreCategory(gross, par) {
 // =====================
 // Handicap / strokes
 // =====================
-
 /**
- * Builds an 18-length array of stroke adjustments by hole
- * - Positive strokes: player RECEIVES strokes (net = gross - adj)
- * - Negative strokes: player GIVES strokes (adj negative, net increases)
+ * buildStrokeArray supports POSITIVE and NEGATIVE strokes.
+ * - Positive strokes: assign 1..18 (hardest holes first: SI 1,2,3...)
+ * - Negative strokes (plus handicap): assign 18..1 (hardest penalties: SI 18,17,16...)
+ *
+ * Returned array is SIGNED:
+ * - +1 means you RECEIVE a stroke (net = gross - 1)
+ * - -1 means you GIVE a stroke (net = gross + 1)
  */
-export function buildStrokeArraySigned(strokes, strokeIndexes) {
+export function buildStrokeArray(strokes, strokeIndexes) {
   const s = Math.round(strokes || 0);
   const abs = Math.abs(s);
   const sign = s === 0 ? 0 : s > 0 ? 1 : -1;
 
   const arr = Array(18).fill(0);
+  if (!abs || !sign) return arr;
 
   for (let k = 0; k < abs; k++) {
-    const si = (k % 18) + 1; // 1..18 repeating
-    const holeIdx = strokeIndexes.indexOf(si);
-    if (holeIdx >= 0) arr[holeIdx] += sign;
-  }
+    const si = sign > 0
+      ? (k % 18) + 1         // 1..18 repeating
+      : 18 - (k % 18);       // 18..1 repeating
 
+    const holeIdx = strokeIndexes.indexOf(si);
+    if (holeIdx >= 0) arr[holeIdx] += 1 * sign;
+  }
   return arr;
 }
 
 /**
- * NET + Stableford uses % global
- * Supports negative handicaps (plus) too.
+ * NET + Stableford uses % global, including negative HCP (plus handicap).
  */
 export function buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes) {
   const percent = toNum(hcpPercent) / 100;
-  const strokes = Math.round((playerHcp || 0) * percent); // can be negative
-  return buildStrokeArraySigned(strokes, strokeIndexes);
+  const strokes = Math.round((playerHcp || 0) * percent); // allow negative
+  return buildStrokeArray(strokes, strokeIndexes);
 }
 
 /**
  * MATCHES are ALWAYS 100% handicap difference (no global %)
- * (kept as-is: we only assign positive strokes to the higher hcp player)
+ * (strokes arrays returned are NON-NEGATIVE allocations for each player)
  */
 export function buildMatchStrokesByHcpDiff100(hcpA, hcpB, strokeIndexes) {
   const diff = Math.round((hcpB - hcpA) * 1);
 
   const strokesA =
-    diff < 0 ? buildStrokeArraySigned(Math.abs(diff), strokeIndexes) : Array(18).fill(0);
-
+    diff < 0 ? buildStrokeArray(Math.abs(diff), strokeIndexes) : Array(18).fill(0);
   const strokesB =
-    diff > 0 ? buildStrokeArraySigned(diff, strokeIndexes) : Array(18).fill(0);
+    diff > 0 ? buildStrokeArray(diff, strokeIndexes) : Array(18).fill(0);
 
-  return { diff, strokesA, strokesB };
+  // Ensure non-negative stroke arrays for match usage
+  const normA = strokesA.map((x) => Math.max(0, x));
+  const normB = strokesB.map((x) => Math.max(0, x));
+
+  return { diff, strokesA: normA, strokesB: normB };
 }
 
 // =====================
@@ -119,7 +127,7 @@ export function sumNet9(arr18, hcpAdj18, startIdx) {
   let t = 0;
   for (let i = startIdx; i < startIdx + 9; i++) {
     const g = safeInt(arr18?.[i]);
-    if (g !== null) t += g - (hcpAdj18?.[i] || 0);
+    if (g !== null) t += g - (hcpAdj18?.[i] || 0); // works for negative adj (adds)
   }
   return t;
 }
@@ -132,7 +140,7 @@ export function stablefordForHole({ gross, par, hcpAdj }) {
   const g = safeInt(gross);
   if (g === null) return 0;
 
-  const net = g - (hcpAdj || 0); // if hcpAdj negative -> net increases (plus handicap)
+  const net = g - (hcpAdj || 0); // works for negative adj (plus handicap)
   const pts = 2 + (par - net);
   return Math.max(0, pts);
 }

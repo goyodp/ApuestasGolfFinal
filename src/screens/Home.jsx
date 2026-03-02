@@ -1,5 +1,5 @@
 // src/screens/Home.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithCredential } from "firebase/auth";
 import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
 import { auth } from "../firebase/auth";
@@ -8,6 +8,8 @@ import { useNavigate } from "react-router-dom";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 
 const LS_KEY = "apuestasGolf_recentSessions";
+
+/* ---------------- LocalStorage helpers ---------------- */
 
 function loadRecent() {
   try {
@@ -29,11 +31,47 @@ function addRecent(sessionId) {
   saveRecent(next);
   return next;
 }
+
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
   return e?.message || e?.error || e?.localizedDescription || JSON.stringify(e);
 }
+
+/* ---------------- Input restrictions ---------------- */
+
+// Session IDs are Firestore doc IDs: letters/numbers + some symbols.
+// We'll keep it user-friendly: allow [A-Za-z0-9_-] only, max 60.
+function sanitizeSessionId(raw) {
+  const s = String(raw ?? "");
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    const isAz = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z");
+    const is09 = ch >= "0" && ch <= "9";
+    const ok = isAz || is09 || ch === "-" || ch === "_";
+    if (ok) out += ch;
+  }
+  return out.slice(0, 60);
+}
+
+function isLikelyValidSessionId(id) {
+  const s = (id || "").trim();
+  if (!s) return false;
+  if (s.length < 6) return false;
+  if (s.length > 60) return false;
+  // Must be only allowed chars
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    const isAz = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z");
+    const is09 = ch >= "0" && ch <= "9";
+    const ok = isAz || is09 || ch === "-" || ch === "_";
+    if (!ok) return false;
+  }
+  return true;
+}
+
+/* ---------------- Screen ---------------- */
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -52,15 +90,21 @@ export default function Home() {
     return () => unsub();
   }, []);
 
+  const joinHint = useMemo(() => {
+    const t = (joinId || "").trim();
+    if (!t) return { type: "muted", msg: "Pega tu Session ID (ej: xYz123Abc…)" };
+    if (t.length < 6) return { type: "warn", msg: "Se ve muy corto. ¿Seguro es el ID completo?" };
+    if (!isLikelyValidSessionId(t)) return { type: "warn", msg: "Formato raro. Solo letras, números, - y _." };
+    return { type: "ok", msg: "Listo para entrar." };
+  }, [joinId]);
+
   const loginGoogle = async () => {
     if (isBusy) return;
     setLoadingGoogle(true);
 
     try {
-      // 1) Login nativo
       const res = await FirebaseAuthentication.signInWithGoogle();
 
-      // 2) Tokens
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.id_token ||
@@ -77,7 +121,6 @@ export default function Home() {
         throw new Error("Google regresó respuesta pero no trajo idToken/accessToken.");
       }
 
-      // 3) Firebase Web sign-in (esto dispara onAuthStateChanged)
       const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
       await signInWithCredential(auth, credential);
     } catch (e) {
@@ -92,7 +135,6 @@ export default function Home() {
     setLoadingApple(true);
     try {
       await FirebaseAuthentication.signInWithApple();
-      // Para Apple real necesitas capability + Apple Developer
     } catch (e) {
       alert(normalizeErr(e));
     } finally {
@@ -146,8 +188,11 @@ export default function Home() {
   };
 
   const joinSession = () => {
-    const id = (joinId || "").trim();
+    const id = sanitizeSessionId(joinId).trim();
     if (!id) return alert("Pega el Session ID.");
+    if (!isLikelyValidSessionId(id)) {
+      return alert("Ese Session ID se ve inválido. Revisa que sea el ID completo (solo letras, números, - y _).");
+    }
     setRecent(addRecent(id));
     navigate(`/session/${id}`);
   };
@@ -155,13 +200,15 @@ export default function Home() {
   const pasteFromClipboard = async () => {
     try {
       const t = await navigator.clipboard.readText();
-      if (t) setJoinId(t.trim());
+      if (t) setJoinId(sanitizeSessionId(t.trim()));
     } catch {
       alert("No pude leer el clipboard. Pega manual.");
     }
   };
 
   const removeRecent = (id) => {
+    const ok = window.confirm(`¿Quitar esta sesión de Recientes?\n\n${id}`);
+    if (!ok) return;
     const next = recent.filter((x) => x !== id);
     setRecent(next);
     saveRecent(next);
@@ -173,9 +220,10 @@ export default function Home() {
     <div style={page}>
       <header style={topBar}>
         <div style={{ minWidth: 0 }}>
-          <div style={brandTitle}>Apuestas</div>
+          <div style={brandTitle}>Apuestas Golf</div>
           <div style={brandSub}>Sesiones compartidas · Grupos · Matches · Greens</div>
         </div>
+
         {user ? (
           <button onClick={logout} style={btnGhost}>Logout</button>
         ) : null}
@@ -200,13 +248,15 @@ export default function Home() {
                 <span>{loadingApple ? "Entrando..." : "Continuar con Apple"}</span>
               </button>
 
-              <div style={{ opacity: 0.55, fontSize: 12, lineHeight: 1.35 }}>
-                Tip: Apple Sign-In en app real requiere Apple Developer + capability “Sign In with Apple”.
+              {/* (Removed long Apple disclaimer; keep it short) */}
+              <div style={{ opacity: 0.6, fontSize: 12, lineHeight: 1.35 }}>
+                Apple Sign-In requiere configuración en Apple Developer.
               </div>
             </div>
           </div>
         ) : (
           <div style={grid2}>
+            {/* Profile + Create */}
             <div style={card}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 {user.photoURL ? (
@@ -231,39 +281,58 @@ export default function Home() {
                 <button onClick={createSession} disabled={creating} style={btnPrimary}>
                   {creating ? "Creando..." : "➕ Crear sesión"}
                 </button>
-                <div style={{ opacity: 0.7, fontSize: 12 }}>
-                  Crea una sesión nueva (Campo + %Hcp global + Entry global).
+
+                {/* (Less “legend”, more useful) */}
+                <div style={hintRow}>
+                  Crea una sesión nueva con <b>Campo</b>, <b>%Hcp</b> y <b>Entry</b> global.
                 </div>
               </div>
             </div>
 
+            {/* Join + Recents */}
             <div style={card}>
               <div style={cardTitle}>Entrar a una sesión</div>
-              <div style={{ opacity: 0.8, marginTop: 6 }}>Pega el Session ID y entra directo.</div>
+              <div style={{ opacity: 0.82, marginTop: 6 }}>Pega el Session ID y entra directo.</div>
 
-              <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+              <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
                 <input
                   value={joinId}
-                  onChange={(e) => setJoinId(e.target.value)}
+                  onChange={(e) => setJoinId(sanitizeSessionId(e.target.value))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") joinSession();
+                  }}
                   placeholder="Ej: xYz123Abc..."
                   style={input}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
                 <button onClick={pasteFromClipboard} style={btn}>Pegar</button>
               </div>
 
+              <div style={helperRow(joinHint.type)}>
+                {joinHint.type === "ok" ? "✅ " : joinHint.type === "warn" ? "⚠️ " : "ℹ️ "}
+                {joinHint.msg}
+              </div>
+
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={joinSession} style={btnPrimary}>🚀 Entrar</button>
+                <button onClick={joinSession} style={btnPrimary} disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}>
+                  🚀 Entrar
+                </button>
                 <button onClick={() => setJoinId("")} style={btnGhost}>Limpiar</button>
               </div>
 
               {recent.length > 0 ? (
                 <div style={{ marginTop: 14 }}>
                   <div style={{ fontWeight: 950, marginBottom: 8 }}>Recientes</div>
-                  <div style={{ display: "grid", gap: 8 }}>
+
+                  {/* leaderboard-not-cut: make rows wrap/scroll cleanly */}
+                  <div style={recentListWrap}>
                     {recent.map((id) => (
                       <div key={id} style={recentRow}>
-                        <code style={codePill}>{id}</code>
-                        <div style={{ display: "flex", gap: 8 }}>
+                        <code style={codePill} title={id}>{id}</code>
+
+                        <div style={recentActions}>
                           <button
                             style={btn}
                             onClick={() => {
@@ -273,10 +342,27 @@ export default function Home() {
                           >
                             Abrir
                           </button>
-                          <button style={btnDanger} onClick={() => removeRecent(id)}>✕</button>
+
+                          <button style={btnDanger} onClick={() => removeRecent(id)} aria-label="Quitar de recientes">
+                            ✕
+                          </button>
                         </div>
                       </div>
                     ))}
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button
+                      style={btnGhost}
+                      onClick={() => {
+                        const ok = window.confirm("¿Borrar toda la lista de sesiones recientes?");
+                        if (!ok) return;
+                        setRecent([]);
+                        saveRecent([]);
+                      }}
+                    >
+                      Limpiar recientes
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -292,6 +378,8 @@ export default function Home() {
   );
 }
 
+/* ---------------- Icons ---------------- */
+
 function GoogleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
@@ -302,6 +390,7 @@ function GoogleIcon() {
     </svg>
   );
 }
+
 function AppleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
@@ -310,7 +399,8 @@ function AppleIcon() {
   );
 }
 
-// Styles
+/* ---------------- Styles ---------------- */
+
 const page = {
   minHeight: "100%",
   paddingTop: "calc(14px + env(safe-area-inset-top))",
@@ -320,6 +410,7 @@ const page = {
   background: "#050505",
   color: "white",
 };
+
 const topBar = {
   display: "flex",
   alignItems: "flex-end",
@@ -327,11 +418,18 @@ const topBar = {
   gap: 12,
   marginBottom: 16,
 };
+
 const brandTitle = { fontSize: 26, fontWeight: 950, letterSpacing: -0.4, lineHeight: 1 };
 const brandSub = { marginTop: 6, opacity: 0.7, fontSize: 13 };
+
 const mainCentered = { minHeight: "calc(100vh - 160px)", display: "grid", placeItems: "center" };
 const mainNormal = { display: "block" };
-const grid2 = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 };
+
+const grid2 = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+  gap: 12,
+};
 
 const card = {
   border: "1px solid #242424",
@@ -340,6 +438,7 @@ const card = {
   background: "linear-gradient(180deg, #0b0b0b 0%, #070707 100%)",
   boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
 };
+
 const cardTitle = { fontWeight: 950, fontSize: 16 };
 
 const btn = {
@@ -351,6 +450,7 @@ const btn = {
   fontWeight: 900,
   cursor: "pointer",
 };
+
 const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
 const btnGhost = { ...btn, background: "transparent", border: "1px solid #2a2a2a", opacity: 0.95 };
 const btnDanger = { ...btn, padding: "10px 12px", border: "1px solid #3a1a1a", background: "#170808", color: "#ffb4b4" };
@@ -366,6 +466,7 @@ const btnProvider = {
   background: "#101010",
   border: "1px solid #2a2a2a",
 };
+
 const btnProviderApple = { ...btnProvider, background: "linear-gradient(180deg, #121212 0%, #0b0b0b 100%)" };
 
 const input = {
@@ -389,11 +490,79 @@ const codePill = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   maxWidth: "100%",
+  minWidth: 0,
 };
-const recentRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 };
+
+const recentListWrap = {
+  display: "grid",
+  gap: 8,
+};
+
+const recentRow = {
+  display: "grid",
+  gridTemplateColumns: "1fr auto",
+  alignItems: "center",
+  gap: 10,
+  minWidth: 0,
+};
+
+const recentActions = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+  justifyContent: "flex-end",
+};
+
 const avatarFallback = {
-  width: 44, height: 44, borderRadius: 999, background: "#111",
-  border: "1px solid #2a2a2a", display: "grid", placeItems: "center", fontSize: 18,
+  width: 44,
+  height: 44,
+  borderRadius: 999,
+  background: "#111",
+  border: "1px solid #2a2a2a",
+  display: "grid",
+  placeItems: "center",
+  fontSize: 18,
 };
-const nameRow = { fontWeight: 950, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-const emailRow = { fontSize: 12, opacity: 0.7, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+
+const nameRow = {
+  fontWeight: 950,
+  fontSize: 16,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+const emailRow = {
+  fontSize: 12,
+  opacity: 0.7,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+const hintRow = {
+  opacity: 0.72,
+  fontSize: 12,
+  lineHeight: 1.35,
+};
+
+const helperRow = (type) => ({
+  marginTop: 10,
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid #2a2a2a",
+  background:
+    type === "ok"
+      ? "rgba(34,197,94,0.10)"
+      : type === "warn"
+      ? "rgba(251,146,60,0.10)"
+      : "rgba(148,163,184,0.08)",
+  color:
+    type === "ok"
+      ? "#bbf7d0"
+      : type === "warn"
+      ? "#fed7aa"
+      : "#e5e7eb",
+  fontSize: 12,
+  fontWeight: 900,
+});

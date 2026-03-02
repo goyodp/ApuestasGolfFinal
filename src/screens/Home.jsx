@@ -1,14 +1,27 @@
 // src/screens/Home.jsx
-import React, { useEffect, useState } from "react";
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
-import { auth } from "../firebase/auth";
-import { db } from "../firebase/db";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  onAuthStateChanged,
+  signOut,
+  signInWithCredential,
+  GoogleAuthProvider,
+} from "firebase/auth";
+import {
+  addDoc,
+  collection,
+  serverTimestamp,
+  doc,
+  setDoc,
+} from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 
+import { auth } from "../firebase/auth";
+import { db } from "../firebase/db";
+
 const LS_KEY = "apuestasGolf_recentSessions";
 
+// ---------- Recent Sessions ----------
 function loadRecent() {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -18,13 +31,11 @@ function loadRecent() {
     return [];
   }
 }
-
 function saveRecent(list) {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify(list.slice(0, 8)));
   } catch {}
 }
-
 function addRecent(sessionId) {
   const current = loadRecent();
   const next = [sessionId, ...current.filter((x) => x !== sessionId)].slice(0, 8);
@@ -32,18 +43,15 @@ function addRecent(sessionId) {
   return next;
 }
 
-function withTimeout(promise, ms = 20000, label = "Operación") {
-  let t;
-  const timeout = new Promise((_, rej) => {
-    t = setTimeout(() => rej(new Error(`${label}: timeout (${ms}ms)`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
-}
-
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
-  const msg = e?.message || e?.error || e?.localizedDescription;
+  const msg =
+    e?.message ||
+    e?.error ||
+    e?.localizedDescription ||
+    e?.code ||
+    e?.data?.message;
   if (msg) return msg;
   try {
     return JSON.stringify(e);
@@ -52,10 +60,11 @@ function normalizeErr(e) {
   }
 }
 
+// ---------- UI ----------
 export default function Home() {
   const [user, setUser] = useState(null);
-  const [creating, setCreating] = useState(false);
 
+  const [creating, setCreating] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingApple, setLoadingApple] = useState(false);
 
@@ -63,47 +72,57 @@ export default function Home() {
   const [recent, setRecent] = useState(() => loadRecent());
 
   const navigate = useNavigate();
+  const isBusy = useMemo(
+    () => creating || loadingGoogle || loadingApple,
+    [creating, loadingGoogle, loadingApple]
+  );
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
   }, []);
 
+  // ✅ Google: Native -> tokens -> Web Firebase
   const loginGoogle = async () => {
-    if (loadingGoogle || loadingApple) return;
+    if (isBusy) return;
     setLoadingGoogle(true);
+
     try {
-      console.log(">>> CLICK GOOGLE");
-      console.log(">>> START signInWithGoogle");
-      const res = await withTimeout(
-        FirebaseAuthentication.signInWithGoogle(),
-        25000,
-        "Google Sign-In"
+      const res = await FirebaseAuthentication.signInWithGoogle();
+
+      const idToken = res?.credential?.idToken || res?.idToken;
+      const accessToken = res?.credential?.accessToken || res?.accessToken;
+
+      if (!idToken && !accessToken) {
+        throw new Error(
+          "Google Sign-In no devolvió tokens. (idToken/accessToken vacío)"
+        );
+      }
+
+      const cred = GoogleAuthProvider.credential(
+        idToken || null,
+        accessToken || null
       );
-      console.log(">>> GOOGLE RES", res);
-      // onAuthStateChanged se encarga de setUser
+
+      await signInWithCredential(auth, cred);
+      // onAuthStateChanged cambia la UI
     } catch (e) {
-      console.error(">>> GOOGLE ERROR", e);
       alert(normalizeErr(e) || "No se pudo iniciar sesión con Google");
     } finally {
       setLoadingGoogle(false);
     }
   };
 
+  // Apple lo dejamos visible, pero con aviso (sin Apple Dev puede fallar)
   const loginApple = async () => {
-    if (loadingGoogle || loadingApple) return;
+    if (isBusy) return;
     setLoadingApple(true);
+
     try {
-      console.log(">>> CLICK APPLE");
-      console.log(">>> START signInWithApple");
-      const res = await withTimeout(
-        FirebaseAuthentication.signInWithApple(),
-        25000,
-        "Apple Sign-In"
-      );
-      console.log(">>> APPLE RES", res);
+      await FirebaseAuthentication.signInWithApple();
+      // En muchos setups el plugin también puede autenticar Firebase directo,
+      // pero sin Apple Developer normalmente no llega a completar.
     } catch (e) {
-      console.error(">>> APPLE ERROR", e);
       alert(normalizeErr(e) || "No se pudo iniciar sesión con Apple");
     } finally {
       setLoadingApple(false);
@@ -111,6 +130,7 @@ export default function Home() {
   };
 
   const logout = async () => {
+    if (isBusy) return;
     try {
       await FirebaseAuthentication.signOut();
     } catch {}
@@ -121,7 +141,7 @@ export default function Home() {
   };
 
   const createSession = async () => {
-    if (!user) return;
+    if (!user || isBusy) return;
     setCreating(true);
 
     try {
@@ -153,9 +173,8 @@ export default function Home() {
 
       setRecent(addRecent(newSessionId));
       navigate(`/session/${newSessionId}`);
-    } catch (error) {
-      console.error(error);
-      alert(normalizeErr(error) || "Error creando sesión");
+    } catch (e) {
+      alert(normalizeErr(e) || "Error creando sesión");
     } finally {
       setCreating(false);
     }
@@ -183,25 +202,25 @@ export default function Home() {
     saveRecent(next);
   };
 
-  const isBusy = loadingGoogle || loadingApple;
-
   return (
     <div style={page}>
       <div style={topBar}>
-        <div>
+        <div style={{ minWidth: 0 }}>
           <div style={brandTitle}>Apuestas Golf</div>
-          <div style={brandSub}>Sesiones compartidas · Grupos · Matches · Greens</div>
+          <div style={brandSub}>
+            Sesiones compartidas · Grupos · Matches · Greens
+          </div>
         </div>
 
         {user ? (
-          <button onClick={logout} style={btnGhost}>
+          <button onClick={logout} style={btnGhost} disabled={isBusy}>
             Logout
           </button>
         ) : null}
       </div>
 
       {!user ? (
-        <div style={card}>
+        <div style={{ ...card, marginTop: 18 }}>
           <div style={cardTitle}>Entrar</div>
           <div style={{ opacity: 0.8, marginTop: 6 }}>
             Inicia sesión para crear y administrar sesiones.
@@ -210,22 +229,32 @@ export default function Home() {
           <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
             <button onClick={loginGoogle} disabled={isBusy} style={btnProvider}>
               <GoogleIcon />
-              <span>{loadingGoogle ? "Entrando..." : "Continuar con Google"}</span>
+              <span>
+                {loadingGoogle ? "Entrando..." : "Continuar con Google"}
+              </span>
             </button>
 
-            <button onClick={loginApple} disabled={isBusy} style={btnProviderApple}>
+            <button
+              onClick={loginApple}
+              disabled={isBusy}
+              style={btnProviderApple}
+            >
               <AppleIcon />
-              <span>{loadingApple ? "Entrando..." : "Continuar con Apple"}</span>
+              <span>
+                {loadingApple ? "Entrando..." : "Continuar con Apple"}
+              </span>
             </button>
 
             <div style={{ opacity: 0.55, fontSize: 12, lineHeight: 1.35 }}>
-              Tip: Apple Sign-In en app real requiere Apple Developer + capability “Sign In with Apple”.
+              Apple Sign-In en app real requiere Apple Developer + capability
+              “Sign In with Apple”.
             </div>
           </div>
         </div>
       ) : (
         <>
           <div style={grid2}>
+            {/* Perfil */}
             <div style={card}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 {user.photoURL ? (
@@ -234,40 +263,27 @@ export default function Home() {
                     alt="avatar"
                     width={44}
                     height={44}
-                    style={{ borderRadius: 999, border: "1px solid #2a2a2a" }}
+                    style={{
+                      borderRadius: 999,
+                      border: "1px solid #2a2a2a",
+                    }}
                   />
                 ) : (
                   <div style={avatarFallback}>👤</div>
                 )}
 
                 <div style={{ minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontWeight: 900,
-                      fontSize: 16,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {user.displayName || "Usuario"}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      opacity: 0.7,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {user.email}
-                  </div>
+                  <div style={nameLine}>{user.displayName || "Usuario"}</div>
+                  <div style={emailLine}>{user.email}</div>
                 </div>
               </div>
 
               <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-                <button onClick={createSession} disabled={creating} style={btnPrimary}>
+                <button
+                  onClick={createSession}
+                  disabled={creating}
+                  style={btnPrimary}
+                >
                   {creating ? "Creando..." : "➕ Crear sesión"}
                 </button>
 
@@ -277,6 +293,7 @@ export default function Home() {
               </div>
             </div>
 
+            {/* Join */}
             <div style={card}>
               <div style={cardTitle}>Entrar a una sesión</div>
               <div style={{ opacity: 0.8, marginTop: 6 }}>
@@ -306,7 +323,9 @@ export default function Home() {
 
               {recent.length > 0 ? (
                 <div style={{ marginTop: 14 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Recientes</div>
+                  <div style={{ fontWeight: 950, marginBottom: 8 }}>
+                    Recientes
+                  </div>
                   <div style={{ display: "grid", gap: 8 }}>
                     {recent.map((id) => (
                       <div key={id} style={recentRow}>
@@ -321,7 +340,10 @@ export default function Home() {
                           >
                             Abrir
                           </button>
-                          <button style={btnDanger} onClick={() => removeRecent(id)}>
+                          <button
+                            style={btnDanger}
+                            onClick={() => removeRecent(id)}
+                          >
                             ✕
                           </button>
                         </div>
@@ -340,8 +362,8 @@ export default function Home() {
           <div style={{ ...card, marginTop: 14 }}>
             <div style={cardTitle}>Tip rápido</div>
             <div style={{ opacity: 0.85, lineHeight: 1.4 }}>
-              Para compartir: entra a la sesión → “Copiar Session ID” → lo mandas por WhatsApp.
-              En móvil, con “Pegar” y “Entrar” queda en 2 taps.
+              Para compartir: entra a la sesión → “Copiar Session ID” → lo mandas
+              por WhatsApp. En móvil, con “Pegar” y “Entrar” queda en 2 taps.
             </div>
           </div>
         </>
@@ -375,7 +397,13 @@ function GoogleIcon() {
 
 function AppleIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="currentColor"
+    >
       <path d="M16.365 1.43c0 1.14-.42 2.2-1.25 3.13-.85.95-2.25 1.7-3.45 1.6-.15-1.12.46-2.3 1.22-3.16.84-.96 2.3-1.67 3.48-1.57zM20.8 17.15c-.55 1.27-.82 1.83-1.53 2.95-.99 1.53-2.39 3.44-4.11 3.46-1.53.02-1.93-1-4.01-1-2.08 0-2.53.98-4.06 1.02-1.72.04-3.03-1.74-4.02-3.27-2.78-4.29-3.07-9.31-1.36-11.94 1.2-1.84 3.09-2.92 4.87-2.92 1.82 0 2.96 1 4.47 1 1.47 0 2.36-1 4.48-1 1.58 0 3.25.86 4.44 2.35-3.91 2.14-3.28 7.74.83 9.35z" />
     </svg>
   );
@@ -384,7 +412,10 @@ function AppleIcon() {
 // ---------- Styles ----------
 const page = {
   minHeight: "100vh",
-  padding: 16,
+  paddingLeft: 16,
+  paddingRight: 16,
+  paddingBottom: 16,
+  paddingTop: "calc(18px + env(safe-area-inset-top))",
   fontFamily: "system-ui",
   background: "#050505",
   color: "white",
@@ -394,7 +425,7 @@ const page = {
 
 const topBar = {
   display: "flex",
-  alignItems: "center",
+  alignItems: "flex-end",
   justifyContent: "space-between",
   gap: 12,
   marginBottom: 14,
@@ -403,7 +434,11 @@ const topBar = {
 const brandTitle = { fontSize: 28, fontWeight: 950, letterSpacing: -0.5 };
 const brandSub = { marginTop: 2, opacity: 0.7, fontSize: 13 };
 
-const grid2 = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 };
+const grid2 = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+  gap: 12,
+};
 
 const card = {
   border: "1px solid #242424",
@@ -414,6 +449,21 @@ const card = {
 };
 
 const cardTitle = { fontWeight: 950, fontSize: 16 };
+
+const nameLine = {
+  fontWeight: 950,
+  fontSize: 16,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+const emailLine = {
+  fontSize: 12,
+  opacity: 0.7,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
 
 const btn = {
   padding: "10px 14px",
@@ -470,7 +520,12 @@ const codePill = {
   maxWidth: "100%",
 };
 
-const recentRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 };
+const recentRow = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+};
 
 const avatarFallback = {
   width: 44,

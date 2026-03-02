@@ -55,34 +55,51 @@ export function scoreCategory(gross, par) {
 // =====================
 // Handicap / strokes
 // =====================
-export function buildStrokeArray(strokes, strokeIndexes) {
-  const abs = Math.abs(Math.round(strokes || 0));
+
+/**
+ * Builds an 18-length array of stroke adjustments by hole
+ * - Positive strokes: player RECEIVES strokes (net = gross - adj)
+ * - Negative strokes: player GIVES strokes (adj negative, net increases)
+ */
+export function buildStrokeArraySigned(strokes, strokeIndexes) {
+  const s = Math.round(strokes || 0);
+  const abs = Math.abs(s);
+  const sign = s === 0 ? 0 : s > 0 ? 1 : -1;
+
   const arr = Array(18).fill(0);
 
   for (let k = 0; k < abs; k++) {
     const si = (k % 18) + 1; // 1..18 repeating
     const holeIdx = strokeIndexes.indexOf(si);
-    if (holeIdx >= 0) arr[holeIdx] += 1;
+    if (holeIdx >= 0) arr[holeIdx] += sign;
   }
+
   return arr;
 }
 
 /**
  * NET + Stableford uses % global
+ * Supports negative handicaps (plus) too.
  */
 export function buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes) {
   const percent = toNum(hcpPercent) / 100;
-  const strokes = Math.max(0, Math.round((playerHcp || 0) * percent));
-  return buildStrokeArray(strokes, strokeIndexes);
+  const strokes = Math.round((playerHcp || 0) * percent); // can be negative
+  return buildStrokeArraySigned(strokes, strokeIndexes);
 }
 
 /**
  * MATCHES are ALWAYS 100% handicap difference (no global %)
+ * (kept as-is: we only assign positive strokes to the higher hcp player)
  */
 export function buildMatchStrokesByHcpDiff100(hcpA, hcpB, strokeIndexes) {
   const diff = Math.round((hcpB - hcpA) * 1);
-  const strokesA = diff < 0 ? buildStrokeArray(Math.abs(diff), strokeIndexes) : Array(18).fill(0);
-  const strokesB = diff > 0 ? buildStrokeArray(diff, strokeIndexes) : Array(18).fill(0);
+
+  const strokesA =
+    diff < 0 ? buildStrokeArraySigned(Math.abs(diff), strokeIndexes) : Array(18).fill(0);
+
+  const strokesB =
+    diff > 0 ? buildStrokeArraySigned(diff, strokeIndexes) : Array(18).fill(0);
+
   return { diff, strokesA, strokesB };
 }
 
@@ -115,7 +132,7 @@ export function stablefordForHole({ gross, par, hcpAdj }) {
   const g = safeInt(gross);
   if (g === null) return 0;
 
-  const net = g - (hcpAdj || 0);
+  const net = g - (hcpAdj || 0); // if hcpAdj negative -> net increases (plus handicap)
   const pts = 2 + (par - net);
   return Math.max(0, pts);
 }

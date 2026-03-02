@@ -1,7 +1,7 @@
 // src/lib/compute.js
 
 // =====================
-// COURSES (session-level)
+// COURSES (global day selection)
 // =====================
 export const COURSE_DATA = {
   "campestre-slp": {
@@ -31,6 +31,26 @@ export function toNum(v) {
 
 export function pairKey(aId, bId) {
   return [aId, bId].sort().join("|");
+}
+
+export function playerKey(groupId, playerId) {
+  return `${groupId}::${playerId}`;
+}
+
+// =====================
+// Score category (for coloring inputs)
+// =====================
+export function scoreCategory(gross, par) {
+  const g = safeInt(gross);
+  if (g === null) return "none";
+  const d = g - (par ?? 4);
+  // -3 or better => albatross/hio bucket
+  if (d <= -3) return "albatross";
+  if (d === -2) return "eagle";
+  if (d === -1) return "birdie";
+  if (d === 1) return "bogey";
+  if (d >= 2) return "double";
+  return "none"; // par (0) or anything else
 }
 
 // =====================
@@ -121,7 +141,6 @@ export function sumNet9(arr18, hcpAdj18, startIdx) {
 // =====================
 // Stableford (NET Stableford)
 // points = max(0, 2 + (par - netScore))
-// par -> 2, birdie -> 3, eagle -> 4, bogey -> 1, dbl bogey -> 0
 // =====================
 export function stablefordForHole({ gross, par, hcpAdj }) {
   const g = safeInt(gross);
@@ -192,12 +211,15 @@ export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
       const net = sumNet(arr, adj);
       const stableford = sumStableford(arr, parValues, adj);
 
+      const pk = playerKey(g.id, p.id);
+
       stablefordRows.push({
         name: p.name || "",
         hcp: p.hcp || 0,
         stableford,
         groupId: g.id,
         playerId: p.id,
+        playerKey: pk,
       });
 
       netRows.push({
@@ -206,6 +228,7 @@ export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
         net,
         groupId: g.id,
         playerId: p.id,
+        playerKey: pk,
       });
     }
   }
@@ -214,6 +237,68 @@ export function computeLeaderboards({ groupsFull, courseId, hcpPercent }) {
   netRows.sort(sortNetThenHcpAsc);
 
   return { stablefordRows, netRows };
+}
+
+// =====================
+// Entry prize distribution
+// - Pool = entryFee * totalPlayers
+// - 50% to 1st Stableford
+// - 30% to 2nd Stableford
+// - 20% to best Net (excluding previous winners)
+// =====================
+function roundMoney(n) {
+  // keep it simple integer pesos
+  return Math.round(toNum(n));
+}
+
+export function computeEntryPrizes({ stablefordRows, netRows, entryFee, totalPlayers }) {
+  const pool = roundMoney(toNum(entryFee) * toNum(totalPlayers));
+
+  const pct1 = 0.5;
+  const pct2 = 0.3;
+  const pct3 = 0.2;
+
+  const awards = [];
+  const used = new Set();
+
+  const s1 = stablefordRows?.[0] || null;
+  if (s1) used.add(s1.playerKey);
+
+  const s2 = stablefordRows?.find((r, idx) => idx > 0 && !used.has(r.playerKey)) || null;
+  if (s2) used.add(s2.playerKey);
+
+  const n1 = netRows?.find((r) => !used.has(r.playerKey)) || null;
+  if (n1) used.add(n1.playerKey);
+
+  const a1 = roundMoney(pool * pct1);
+  const a2 = roundMoney(pool * pct2);
+  const a3 = roundMoney(pool * pct3);
+
+  awards.push({
+    label: "🥇 1º Stableford (50%)",
+    amount: a1,
+    name: s1?.name || "",
+    meta: s1 ? `STB ${s1.stableford} · HCP ${s1.hcp} · ${s1.groupId}` : "-",
+    playerKey: s1?.playerKey || null,
+  });
+
+  awards.push({
+    label: "🥈 2º Stableford (30%)",
+    amount: a2,
+    name: s2?.name || "",
+    meta: s2 ? `STB ${s2.stableford} · HCP ${s2.hcp} · ${s2.groupId}` : "-",
+    playerKey: s2?.playerKey || null,
+  });
+
+  awards.push({
+    label: "🏅 1º Net (20%)",
+    amount: a3,
+    name: n1?.name || "",
+    meta: n1 ? `NET ${n1.net} · HCP ${n1.hcp} · ${n1.groupId}` : "-",
+    playerKey: n1?.playerKey || null,
+  });
+
+  return { pool, awards };
 }
 
 // =====================
@@ -264,116 +349,4 @@ export function computeMatchResultForPair({ a, b, scores, courseId, hcpPercent }
     back,
     total: front + back,
   };
-}
-
-export function computeMatchesByGroup({
-  groupsFull,
-  courseId,
-  hcpPercent,
-  matchBetsByGroup = {},
-  dobladasByGroup = {},
-}) {
-  const out = {};
-
-  for (const g of groupsFull) {
-    const players = g.players || [];
-    const scores = g.scores || {};
-    const bets = matchBetsByGroup[g.id] || {};
-    const dobladas = dobladasByGroup[g.id] || {};
-
-    const res = [];
-
-    for (let i = 0; i < players.length; i++) {
-      for (let j = i + 1; j < players.length; j++) {
-        const a = players[i];
-        const b = players[j];
-
-        const r = computeMatchResultForPair({ a, b, scores, courseId, hcpPercent });
-
-        const key = pairKey(a.id, b.id);
-        const bet = bets[key] || { f9: 0, b9: 0, total: 0 };
-        const dbl = dobladas[key] || { f9By: null, b9By: null, totalBy: null };
-
-        const money = calcMatchMoneyForPair({
-          pairResult: r,
-          aId: a.id,
-          bId: b.id,
-          matchBetsForPair: bet,
-          dobladasForPair: dbl,
-        });
-
-        res.push({ ...r, bet, doblada: dbl, money });
-      }
-    }
-
-    out[g.id] = res;
-  }
-
-  return out;
-}
-
-// =====================
-// Dobladas / Money
-// =====================
-function loserIdFromResult(segmentResult, aId, bId) {
-  if (segmentResult === 0) return null;
-  return segmentResult > 0 ? bId : aId;
-}
-
-function segmentMultiplier({ segmentResult, aId, bId, requestedBy }) {
-  if (!requestedBy) return 1;
-  const loserId = loserIdFromResult(segmentResult, aId, bId);
-  if (!loserId) return 1;
-  return requestedBy === loserId ? 2 : 1;
-}
-
-export function calcMatchMoneyForPair({ pairResult, aId, bId, matchBetsForPair, dobladasForPair }) {
-  const f9Bet = toNum(matchBetsForPair?.f9);
-  const b9Bet = toNum(matchBetsForPair?.b9);
-  const tBet = toNum(matchBetsForPair?.total);
-
-  const f9Mult = segmentMultiplier({
-    segmentResult: pairResult.front,
-    aId,
-    bId,
-    requestedBy: dobladasForPair?.f9By || null,
-  });
-
-  const b9Mult = segmentMultiplier({
-    segmentResult: pairResult.back,
-    aId,
-    bId,
-    requestedBy: dobladasForPair?.b9By || null,
-  });
-
-  const tMult = segmentMultiplier({
-    segmentResult: pairResult.total,
-    aId,
-    bId,
-    requestedBy: dobladasForPair?.totalBy || null,
-  });
-
-  const moneyF9 = pairResult.front === 0 ? 0 : Math.sign(pairResult.front) * f9Bet * f9Mult;
-  const moneyB9 = pairResult.back === 0 ? 0 : Math.sign(pairResult.back) * b9Bet * b9Mult;
-  const moneyT = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * tBet * tMult;
-
-  return {
-    moneyF9,
-    moneyB9,
-    moneyT,
-    moneyTotal: moneyF9 + moneyB9 + moneyT,
-    multipliers: { f9Mult, b9Mult, tMult },
-  };
-}
-
-export function fmtMatch(v) {
-  if (v === 0) return "AS";
-  if (v > 0) return `+${v}`;
-  return `${v}`;
-}
-
-export function fmtMoney(n) {
-  const x = toNum(n);
-  if (x === 0) return "$0";
-  return x > 0 ? `+$${x.toFixed(0)}` : `-$${Math.abs(x).toFixed(0)}`;
 }

@@ -6,7 +6,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -17,105 +16,36 @@ import {
 import { db } from "../firebase/db";
 import { auth } from "../firebase/auth";
 
-// Ajusta si tu ruta/export difiere:
-import { buildStrokeArray, buildHcpAdjustments } from "../lib/compute";
+import {
+  COURSE_DATA,
+  buildHcpAdjustments,
+  computeLeaderboards,
+  computeMatchResultForPair,
+  fmtMatch,
+} from "../lib/compute";
 
-// 👇 Mantén aquí los courses (por ahora)
+// Courses disponibles (session-level)
 const COURSES = [
   { id: "campestre-slp", label: "Campestre de San Luis" },
   { id: "la-loma", label: "La Loma Golf" },
 ];
 
-const COURSE_DATA = {
-  "campestre-slp": {
-    name: "Campestre de San Luis",
-    parValues: [4, 3, 4, 4, 4, 4, 5, 3, 5, 5, 3, 4, 4, 4, 3, 4, 4, 5],
-    strokeIndexes: [3, 13, 15, 7, 5, 1, 17, 11, 9, 4, 12, 6, 14, 18, 8, 2, 16, 10],
-  },
-  "la-loma": {
-    name: "La Loma Golf",
-    parValues: [4, 4, 4, 3, 5, 5, 4, 3, 4, 4, 3, 4, 4, 4, 5, 4, 3, 5],
-    strokeIndexes: [11, 3, 13, 17, 7, 5, 1, 15, 9, 2, 18, 10, 16, 4, 8, 14, 12, 6],
-  },
-};
-
-// ---------- helpers cálculos ----------
-function safeInt(v) {
-  const n = parseInt(v);
-  return Number.isNaN(n) ? null : n;
-}
-
-function sumGross(arr18) {
-  let t = 0;
-  for (let i = 0; i < 18; i++) {
-    const n = safeInt(arr18?.[i]);
-    if (n !== null) t += n;
-  }
-  return t;
-}
-
-function netTotal(arr18, hcpAdj18) {
-  let t = 0;
-  for (let i = 0; i < 18; i++) {
-    const g = safeInt(arr18?.[i]);
-    if (g !== null) t += g - (hcpAdj18[i] || 0);
-  }
-  return t;
-}
-
-function matchByHcpDiff({ grossA, grossB, diffStrokesForA, strokeIndexes }) {
-  // diffStrokesForA > 0 => A recibe golpes
-  // diffStrokesForA < 0 => B recibe golpes
-  const strokesA = diffStrokesForA > 0 ? buildStrokeArray(diffStrokesForA, strokeIndexes) : Array(18).fill(0);
-  const strokesB = diffStrokesForA < 0 ? buildStrokeArray(Math.abs(diffStrokesForA), strokeIndexes) : Array(18).fill(0);
-
-  let front = 0;
-  let back = 0;
-
-  for (let i = 0; i < 18; i++) {
-    const a = safeInt(grossA?.[i]);
-    const b = safeInt(grossB?.[i]);
-    if (a === null || b === null) continue;
-
-    const aAdj = a - (strokesA[i] || 0);
-    const bAdj = b - (strokesB[i] || 0);
-
-    let r = 0;
-    if (aAdj < bAdj) r = 1;
-    else if (aAdj > bAdj) r = -1;
-
-    if (i < 9) front += r;
-    else back += r;
-  }
-
-  return { front, back, total: front + back };
-}
-
-function tieBreak(a, b, key, hcpKey = "hcp") {
-  // key: "gross" (asc) o "net" (asc)
-  // si empatan, gana hcp menor (sube)
-  if (a[key] !== b[key]) return a[key] - b[key];
-  return (a[hcpKey] || 0) - (b[hcpKey] || 0);
-}
-
-// ---------- componente ----------
 export default function Session() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
 
   const [session, setSession] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [groups, setGroups] = useState([]);
+  const [groups, setGroups] = useState([]);          // meta: {id, order, name...}
+  const [groupStates, setGroupStates] = useState({}); // { [groupId]: stateMain }
 
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
 
-  const sessionRef = useMemo(() => {
-    if (!sessionId) return null;
-    return doc(db, "sessions", sessionId);
-  }, [sessionId]);
+  const sessionRef = useMemo(() => (sessionId ? doc(db, "sessions", sessionId) : null), [sessionId]);
 
+  // Session main
   useEffect(() => {
     if (!sessionRef) return;
     return onSnapshot(sessionRef, (snap) => {
@@ -123,24 +53,74 @@ export default function Session() {
     });
   }, [sessionRef]);
 
+  // Settings
   useEffect(() => {
     if (!sessionId) return;
     const settingsRef = doc(db, "sessions", sessionId, "settings", "main");
     return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
   }, [sessionId]);
 
+  // Groups meta
   useEffect(() => {
     if (!sessionId) return;
     const groupsRef = collection(db, "sessions", sessionId, "groups");
     const q = query(groupsRef, orderBy("order", "asc"));
     return onSnapshot(q, (snap) => {
-      setGroups(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const meta = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setGroups(meta);
     });
   }, [sessionId]);
 
+  // Subscribe to each group state/main (live)
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const unsubs = [];
+    const next = {};
+
+    groups.forEach((g) => {
+      const ref = doc(db, "sessions", sessionId, "groups", g.id, "state", "main");
+      const unsub = onSnapshot(ref, (snap) => {
+        setGroupStates((prev) => ({
+          ...prev,
+          [g.id]: snap.exists() ? snap.data() : null,
+        }));
+      });
+      unsubs.push(unsub);
+
+      // mantiene keys consistentes (si aún no llega snapshot)
+      if (!(g.id in next)) next[g.id] = groupStates[g.id] ?? null;
+    });
+
+    return () => unsubs.forEach((u) => u());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, groups.map((g) => g.id).join("|")]);
+
+  // Derived session-level config
   const courseId = session?.courseId || "campestre-slp";
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const hcpPercent = session?.hcpPercent ?? 100;
+
+  // Build groupsFull for compute
+  const groupsFull = groups.map((g) => {
+    const st = groupStates[g.id] || {};
+    return {
+      id: g.id,
+      order: g.order || 0,
+      name: g.name || g.id,
+      players: st?.players || [],
+      scores: st?.scores || {},
+      matchBets: st?.matchBets || {},   // por si luego lo metes ahí
+      dobladas: st?.dobladas || {},     // por si luego lo metes ahí
+    };
+  });
+
+  // Live computed leaderboards
+  const computed = computeLeaderboards({
+    groupsFull,
+    courseId,
+    hcpPercent,
+  });
 
   const copySessionId = async () => {
     try {
@@ -166,7 +146,7 @@ export default function Session() {
 
   const changeHcpPercent = async (value) => {
     if (!sessionRef) return;
-    const v = Math.max(0, Math.min(100, parseInt(value || "0")));
+    const v = Math.max(0, Math.min(100, parseInt(value || "0", 10)));
     try {
       await updateDoc(sessionRef, { hcpPercent: v, updatedAt: serverTimestamp() });
     } catch (e) {
@@ -179,9 +159,7 @@ export default function Session() {
     if (!sessionId) return;
     setCreatingGroup(true);
     try {
-      const nextOrder =
-        (groups?.length ? Math.max(...groups.map((g) => g.order || 0)) : 0) + 1;
-
+      const nextOrder = (groups?.length ? Math.max(...groups.map((g) => g.order || 0)) : 0) + 1;
       const groupDocId = `group-${nextOrder}`;
 
       await setDoc(doc(db, "sessions", sessionId, "groups", groupDocId), {
@@ -200,114 +178,62 @@ export default function Session() {
     }
   };
 
-  // ---------- snapshot + computed ----------
+  // ---------- HISTORY SNAPSHOT ----------
   const buildSnapshot = async () => {
-    // sesión
     const sessionSnap = await getDoc(doc(db, "sessions", sessionId));
     const sessionData = sessionSnap.exists() ? sessionSnap.data() : {};
 
-    // settings
     const settingsSnap = await getDoc(doc(db, "sessions", sessionId, "settings", "main"));
     const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
 
-    // groups meta
-    const groupsSnap = await getDocs(
-      query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc"))
-    );
-    const groupsMeta = groupsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-    // group state/main
-    const groupsFull = [];
-    for (const g of groupsMeta) {
-      const st = await getDoc(doc(db, "sessions", sessionId, "groups", g.id, "state", "main"));
-      groupsFull.push({
+    // Reuse groupsFull already live in UI (pero guardamos lo que haya en Firestore)
+    // Para historia “exacta”, tomamos groupStates actuales (ya están live)
+    const snapGroupsFull = groups.map((g) => {
+      const st = groupStates[g.id] || {};
+      return {
         id: g.id,
-        name: g.name || g.id,
         order: g.order || 0,
-        ...(st.exists() ? st.data() : {}),
-      });
-    }
-
-    const snapshotCourseId = sessionData?.courseId || "campestre-slp";
-    const snapshotCourse = COURSE_DATA[snapshotCourseId] || COURSE_DATA["campestre-slp"];
-    const snapshotHcpPercent = sessionData?.hcpPercent ?? 100;
-
-    const { parValues, strokeIndexes } = snapshotCourse;
-
-    // Flatten global players
-    const allPlayers = [];
-    const allScores = []; // aligned
-    const playerMeta = []; // { groupId, playerId }
-    groupsFull.forEach((g) => {
-      const ps = g.players || [];
-      const sc = g.scores || {};
-      ps.forEach((p) => {
-        allPlayers.push(p);
-        allScores.push(sc[p.id] || Array(18).fill(""));
-        playerMeta.push({ groupId: g.id, playerId: p.id });
-      });
+        name: g.name || g.id,
+        players: st?.players || [],
+        scores: st?.scores || {},
+        matchBets: st?.matchBets || {},
+        dobladas: st?.dobladas || {},
+        greenies: st?.greenies || {},
+      };
     });
 
-    // Leaderboard Gross + Net (ASC) con tie-break por HCP menor
-    const grossRows = allPlayers.map((p, idx) => ({
-      name: p.name || "",
-      hcp: p.hcp || 0,
-      gross: sumGross(allScores[idx]),
-      groupId: playerMeta[idx].groupId,
-    }))
-    .sort((a, b) => tieBreak(a, b, "gross"));
+    const snapshotCourseId = sessionData?.courseId || "campestre-slp";
+    const snapshotHcpPercent = sessionData?.hcpPercent ?? 100;
 
-    const netRows = allPlayers.map((p, idx) => {
-      const adj = buildHcpAdjustments(p.hcp || 0, snapshotHcpPercent, strokeIndexes);
-      return {
-        name: p.name || "",
-        hcp: p.hcp || 0,
-        net: netTotal(allScores[idx], adj),
-        groupId: playerMeta[idx].groupId,
-      };
-    })
-    .sort((a, b) => tieBreak(a, b, "net"));
+    const snapComputed = computeLeaderboards({
+      groupsFull: snapGroupsFull,
+      courseId: snapshotCourseId,
+      hcpPercent: snapshotHcpPercent,
+    });
 
-    // Matches por grupo usando DIFERENCIA (hcpA - hcpB)
-    // diff > 0 => A recibe diff golpes; diff < 0 => B recibe
+    // matches by group (solo marcador F9/B9/T por ahora)
     const matchesByGroup = {};
-    groupsFull.forEach((g) => {
+    for (const g of snapGroupsFull) {
       const ps = g.players || [];
       const sc = g.scores || {};
       const res = [];
 
       for (let i = 0; i < ps.length; i++) {
         for (let j = i + 1; j < ps.length; j++) {
-          const A = ps[i];
-          const B = ps[j];
-
-          const rawDiff = (B.hcp || 0) - (A.hcp || 0); // si B tiene más hcp, B recibe
-          const diffStrokesForA = Math.round((-rawDiff) * (snapshotHcpPercent / 100));
-          // Explicación:
-          // Queremos diffStrokesForA: positivo => A recibe
-          // rawDiff = B - A. Si B es mayor, A debería NO recibir (B recibe), por eso usamos -rawDiff.
-
-          const r = matchByHcpDiff({
-            grossA: sc[A.id] || Array(18).fill(""),
-            grossB: sc[B.id] || Array(18).fill(""),
-            diffStrokesForA,
-            strokeIndexes,
+          const a = ps[i];
+          const b = ps[j];
+          const r = computeMatchResultForPair({
+            a,
+            b,
+            scores: sc,
+            courseId: snapshotCourseId,
+            hcpPercent: snapshotHcpPercent,
           });
-
-          res.push({
-            label: `${A.name} vs ${B.name}`,
-            a: { id: A.id, name: A.name, hcp: A.hcp || 0 },
-            b: { id: B.id, name: B.name, hcp: B.hcp || 0 },
-            diffStrokesForA,
-            front: r.front,
-            back: r.back,
-            total: r.total,
-          });
+          res.push(r);
         }
       }
-
       matchesByGroup[g.id] = res;
-    });
+    }
 
     return {
       session: {
@@ -317,10 +243,10 @@ export default function Session() {
         hcpPercent: snapshotHcpPercent,
       },
       settings: settingsData,
-      groups: groupsFull,
+      groups: snapGroupsFull,
       computed: {
-        leaderboardGross: grossRows,
-        leaderboardNet: netRows,
+        leaderboardNet: snapComputed.netRows,
+        leaderboardStableford: snapComputed.stbRows,
         matchesByGroup,
       },
     };
@@ -428,12 +354,66 @@ export default function Session() {
         )}
       </section>
 
-      {/* Leaderboards (computed live desde groups/state) */}
-      <ComputedLeaderboards
-        sessionId={sessionId}
-        course={course}
-        hcpPercent={hcpPercent}
-      />
+      {/* Leaderboards */}
+      <section style={{ marginBottom: 18 }}>
+        <h2 style={{ margin: "0 0 8px 0" }}>Leaderboard (General)</h2>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={card}>
+            <div style={cardTitle}>Stableford (mejor = mayor)</div>
+            <table style={miniTable}>
+              <thead>
+                <tr>
+                  <th style={miniTh}>#</th>
+                  <th style={miniThLeft}>Jugador</th>
+                  <th style={miniTh}>HCP</th>
+                  <th style={miniTh}>STB</th>
+                </tr>
+              </thead>
+              <tbody>
+                {computed.stbRows.slice(0, 12).map((r, i) => (
+                  <tr key={i}>
+                    <td style={miniTd}>{i + 1}</td>
+                    <td style={miniTdLeft}>{r.name}</td>
+                    <td style={miniTd}>{r.hcp}</td>
+                    <td style={miniTd}><b>{r.stb}</b></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
+              Empate: gana el HCP menor (sube arriba).
+            </div>
+          </div>
+
+          <div style={card}>
+            <div style={cardTitle}>Net (mejor = menor)</div>
+            <table style={miniTable}>
+              <thead>
+                <tr>
+                  <th style={miniTh}>#</th>
+                  <th style={miniThLeft}>Jugador</th>
+                  <th style={miniTh}>HCP</th>
+                  <th style={miniTh}>Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {computed.netRows.slice(0, 12).map((r, i) => (
+                  <tr key={i}>
+                    <td style={miniTd}>{i + 1}</td>
+                    <td style={miniTdLeft}>{r.name}</td>
+                    <td style={miniTd}>{r.hcp}</td>
+                    <td style={miniTd}><b>{r.net}</b></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
+              Empate: gana el HCP menor (sube arriba).
+            </div>
+          </div>
+        </div>
+      </section>
 
       <hr style={hr} />
 
@@ -455,8 +435,9 @@ export default function Session() {
                 key={g.id}
                 sessionId={sessionId}
                 group={g}
-                course={course}
+                courseId={courseId}
                 hcpPercent={hcpPercent}
+                state={groupStates[g.id]}
                 onOpen={() => navigate(`/session/${sessionId}/group/${g.id}`)}
               />
             ))
@@ -467,161 +448,27 @@ export default function Session() {
   );
 }
 
-// ---------- Leaderboard live ----------
-function ComputedLeaderboards({ sessionId, course, hcpPercent }) {
-  const [rows, setRows] = useState({ gross: [], net: [] });
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function loadAll() {
-      const groupsSnap = await getDocs(
-        query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc"))
-      );
-
-      const groupsMeta = groupsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      const allPlayers = [];
-      const allScores = [];
-      const groupIds = [];
-
-      for (const g of groupsMeta) {
-        const st = await getDoc(doc(db, "sessions", sessionId, "groups", g.id, "state", "main"));
-        const data = st.exists() ? st.data() : {};
-        const players = data.players || [];
-        const scores = data.scores || {};
-        players.forEach((p) => {
-          allPlayers.push(p);
-          allScores.push(scores[p.id] || Array(18).fill(""));
-          groupIds.push(g.id);
-        });
-      }
-
-      const gross = allPlayers
-        .map((p, idx) => ({
-          name: p.name || "",
-          hcp: p.hcp || 0,
-          gross: sumGross(allScores[idx]),
-          groupId: groupIds[idx],
-        }))
-        .sort((a, b) => tieBreak(a, b, "gross"));
-
-      const net = allPlayers
-        .map((p, idx) => {
-          const adj = buildHcpAdjustments(p.hcp || 0, hcpPercent, course.strokeIndexes);
-          return {
-            name: p.name || "",
-            hcp: p.hcp || 0,
-            net: netTotal(allScores[idx], adj),
-            groupId: groupIds[idx],
-          };
-        })
-        .sort((a, b) => tieBreak(a, b, "net"));
-
-      if (mounted) setRows({ gross, net });
-    }
-
-    loadAll().catch(console.error);
-    return () => {
-      mounted = false;
-    };
-  }, [sessionId, course.strokeIndexes, hcpPercent]);
-
-  return (
-    <section style={{ marginBottom: 18 }}>
-      <h2 style={{ margin: "0 0 8px 0" }}>Leaderboard (General)</h2>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div style={card}>
-          <div style={cardTitle}>Gross (mejor = menor)</div>
-          <table style={miniTable}>
-            <thead>
-              <tr>
-                <th style={miniTh}>#</th>
-                <th style={miniThLeft}>Jugador</th>
-                <th style={miniTh}>HCP</th>
-                <th style={miniTh}>Gross</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.gross.slice(0, 12).map((r, i) => (
-                <tr key={i}>
-                  <td style={miniTd}>{i + 1}</td>
-                  <td style={miniTdLeft}>{r.name}</td>
-                  <td style={miniTd}>{r.hcp}</td>
-                  <td style={miniTd}><b>{r.gross}</b></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-            Empate: gana el HCP menor (sube arriba).
-          </div>
-        </div>
-
-        <div style={card}>
-          <div style={cardTitle}>Net (mejor = menor)</div>
-          <table style={miniTable}>
-            <thead>
-              <tr>
-                <th style={miniTh}>#</th>
-                <th style={miniThLeft}>Jugador</th>
-                <th style={miniTh}>HCP</th>
-                <th style={miniTh}>Net</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.net.slice(0, 12).map((r, i) => (
-                <tr key={i}>
-                  <td style={miniTd}>{i + 1}</td>
-                  <td style={miniTdLeft}>{r.name}</td>
-                  <td style={miniTd}>{r.hcp}</td>
-                  <td style={miniTd}><b>{r.net}</b></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
-            Empate: gana el HCP menor (sube arriba).
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 // ---------- Group card + matches live ----------
-function GroupCard({ sessionId, group, course, hcpPercent, onOpen }) {
-  const [state, setState] = useState(null);
-
-  useEffect(() => {
-    const ref = doc(db, "sessions", sessionId, "groups", group.id, "state", "main");
-    return onSnapshot(ref, (snap) => setState(snap.exists() ? snap.data() : null));
-  }, [sessionId, group.id]);
-
+function GroupCard({ group, courseId, hcpPercent, state, onOpen }) {
   const players = state?.players || [];
   const scores = state?.scores || {};
 
   const matches = [];
   for (let i = 0; i < players.length; i++) {
     for (let j = i + 1; j < players.length; j++) {
-      const A = players[i];
-      const B = players[j];
+      const a = players[i];
+      const b = players[j];
 
-      // DIFERENCIA de handicap (A vs B)
-      // Si A=1, B=10 => B recibe 9 golpes.
-      // Queremos diffStrokesForA: positivo => A recibe; negativo => B recibe
-      const rawDiff = (B.hcp || 0) - (A.hcp || 0);
-      const diffStrokesForA = Math.round((-rawDiff) * (hcpPercent / 100));
-
-      const r = matchByHcpDiff({
-        grossA: scores[A.id] || Array(18).fill(""),
-        grossB: scores[B.id] || Array(18).fill(""),
-        diffStrokesForA,
-        strokeIndexes: course.strokeIndexes,
+      const r = computeMatchResultForPair({
+        a,
+        b,
+        scores,
+        courseId,
+        hcpPercent,
       });
 
       matches.push({
-        label: `${A.name} vs ${B.name}`,
+        label: r.label,
         front: r.front,
         back: r.back,
         total: r.total,
@@ -656,7 +503,18 @@ function GroupCard({ sessionId, group, course, hcpPercent, onOpen }) {
                 m.total < 0 ? "#fca5a5" :
                 "#d4d4d4";
               return (
-                <div key={idx} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 10px", border: "1px solid #2a2a2a", borderRadius: 12, background: "#0c0c0c" }}>
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "8px 10px",
+                    border: "1px solid #2a2a2a",
+                    borderRadius: 12,
+                    background: "#0c0c0c",
+                  }}
+                >
                   <div style={{ fontWeight: 800 }}>{m.label}</div>
                   <div style={{ display: "flex", gap: 10, fontWeight: 900, color: c }}>
                     <span>F9 {fmtMatch(m.front)}</span>
@@ -671,12 +529,6 @@ function GroupCard({ sessionId, group, course, hcpPercent, onOpen }) {
       </div>
     </div>
   );
-}
-
-function fmtMatch(v) {
-  if (v === 0) return "AS";
-  if (v > 0) return `+${v}`;
-  return `${v}`;
 }
 
 // ---------- styles ----------

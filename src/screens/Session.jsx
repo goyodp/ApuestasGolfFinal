@@ -17,7 +17,11 @@ import {
 import { db } from "../firebase/db";
 import { auth } from "../firebase/auth";
 
-import { COURSE_DATA, computeLeaderboards } from "../lib/compute";
+import {
+  COURSE_DATA,
+  computeLeaderboards,
+  computeEntryPrizes,
+} from "../lib/compute";
 
 const COURSES = [
   { id: "campestre-slp", label: "Campestre de San Luis" },
@@ -28,10 +32,6 @@ const DEFAULT_SETTINGS = {
   courseId: "campestre-slp",
   hcpPercent: 100,
   entryFee: 0,
-  birdiePay: 0,
-  eaglePay: 0,
-  albatrossPay: 0,
-  greeniePay: 0,
 };
 
 export default function Session() {
@@ -45,6 +45,7 @@ export default function Session() {
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
   const [savingHcp, setSavingHcp] = useState(false);
+  const [savingEntry, setSavingEntry] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
 
   // Live computed state
@@ -60,7 +61,7 @@ export default function Session() {
     return doc(db, "sessions", sessionId, "settings", "main");
   }, [sessionId]);
 
-  // ----------- session doc -----------
+  // ---- session doc ----
   useEffect(() => {
     if (!sessionRef) return;
     return onSnapshot(sessionRef, (snap) => {
@@ -68,24 +69,18 @@ export default function Session() {
     });
   }, [sessionRef]);
 
-  // ----------- settings/main (source of truth for course + hcpPercent) -----------
+  // ---- settings/main (global) ----
   useEffect(() => {
     if (!settingsRef) return;
     return onSnapshot(settingsRef, (snap) => {
-      if (snap.exists()) {
-        setSettings({ ...DEFAULT_SETTINGS, ...snap.data() });
-      } else {
-        setSettings(null);
-      }
+      if (snap.exists()) setSettings({ ...DEFAULT_SETTINGS, ...snap.data() });
+      else setSettings(null);
     });
   }, [settingsRef]);
 
-  // Auto-init settings/main if missing (safe)
+  // Auto-init settings/main if missing
   useEffect(() => {
-    if (!sessionId || !settingsRef) return;
-    if (settings !== null) return; // already exists
-    // If it's null, we don't know if it's "loading" or "missing".
-    // We'll do a one-time getDoc to confirm.
+    if (!settingsRef) return;
     (async () => {
       try {
         const s = await getDoc(settingsRef);
@@ -100,10 +95,9 @@ export default function Session() {
         console.error("settings init failed", e);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, settingsRef]);
+  }, [settingsRef]);
 
-  // ----------- groups meta -----------
+  // ---- groups meta ----
   useEffect(() => {
     if (!sessionId) return;
     const groupsRef = collection(db, "sessions", sessionId, "groups");
@@ -113,14 +107,14 @@ export default function Session() {
     });
   }, [sessionId]);
 
-  // ----------- subscribe to each group's state/main (for leaderboards only) -----------
+  // ---- subscribe each group state/main (for leaderboard + player count) ----
   useEffect(() => {
     if (!sessionId) return;
 
     const unsubs = [];
     const groupIds = new Set(groups.map((g) => g.id));
 
-    // remove stale group states (if groups list changed)
+    // prune stale
     setGroupsStateMap((prev) => {
       const next = {};
       Object.keys(prev).forEach((gid) => {
@@ -144,12 +138,24 @@ export default function Session() {
   const effectiveSettings = settings || DEFAULT_SETTINGS;
 
   const courseId = effectiveSettings.courseId || "campestre-slp";
-  const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const hcpPercent = Number.isFinite(effectiveSettings.hcpPercent)
     ? effectiveSettings.hcpPercent
     : 100;
+  const entryFee = Number.isFinite(effectiveSettings.entryFee)
+    ? effectiveSettings.entryFee
+    : 0;
 
+  const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
+
+  const totalPlayers = useMemo(() => {
+    let n = 0;
+    for (const g of groups) {
+      const st = groupsStateMap[g.id];
+      n += (st?.players?.length || 0);
+    }
+    return n;
+  }, [groups, groupsStateMap]);
 
   const copySessionId = async () => {
     try {
@@ -186,6 +192,21 @@ export default function Session() {
       alert(e?.message || "No se pudo actualizar handicap %");
     } finally {
       setSavingHcp(false);
+    }
+  };
+
+  const changeEntryFee = async (value) => {
+    if (!settingsRef) return;
+    setSavingEntry(true);
+    const v = Math.max(0, parseInt(value || "0", 10));
+    try {
+      await updateDoc(settingsRef, { entryFee: v, updatedAt: serverTimestamp() });
+      await updateDoc(doc(db, "sessions", sessionId), { updatedAt: serverTimestamp() });
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "No se pudo actualizar entry");
+    } finally {
+      setSavingEntry(false);
     }
   };
 
@@ -248,6 +269,14 @@ export default function Session() {
       hcpPercent: snapshotHcpPercent,
     });
 
+    const totalPlayersSnap = groupsFull.reduce((acc, g) => acc + (g.players?.length || 0), 0);
+    const prizes = computeEntryPrizes({
+      stablefordRows,
+      netRows,
+      entryFee: settingsData.entryFee ?? 0,
+      totalPlayers: totalPlayersSnap,
+    });
+
     return {
       session: {
         name: sessionData?.name || "",
@@ -258,6 +287,7 @@ export default function Session() {
       computed: {
         leaderboardStableford: stablefordRows,
         leaderboardNet: netRows,
+        entryPrizes: prizes,
       },
     };
   };
@@ -290,9 +320,9 @@ export default function Session() {
     );
   }
 
-  if (!session) return <div style={page}>Cargando sesión...</div>;
+  if (!session || !settings) return <div style={page}>Cargando sesión...</div>;
 
-  // Build groupsFull for compute (from live map)
+  // Build groupsFull for compute
   const groupsFull = groups.map((g) => ({
     id: g.id,
     name: g.name || g.id,
@@ -306,9 +336,15 @@ export default function Session() {
     hcpPercent,
   });
 
+  const prizes = computeEntryPrizes({
+    stablefordRows,
+    netRows,
+    entryFee,
+    totalPlayers,
+  });
+
   return (
     <div style={page}>
-      {/* Sticky header for mobile */}
       <div style={stickyHeader}>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -332,7 +368,7 @@ export default function Session() {
           <button onClick={() => navigate("/")} style={btn}>← Home</button>
         </div>
 
-        {/* Campo + %Hcp */}
+        {/* Global day settings */}
         <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ fontWeight: 900 }}>Campo:</div>
           <select
@@ -359,25 +395,59 @@ export default function Session() {
             inputMode="numeric"
           />
           {savingHcp ? <span style={{ opacity: 0.75 }}>Guardando…</span> : <span style={{ opacity: 0.75 }}>strokes</span>}
+
+          <div style={{ width: 6 }} />
+
+          <div style={{ fontWeight: 900 }}>Entry (global):</div>
+          <input
+            type="number"
+            value={entryFee}
+            onChange={(e) => changeEntryFee(e.target.value)}
+            onBlur={(e) => changeEntryFee(e.target.value)}
+            style={inputSmall}
+            inputMode="numeric"
+          />
+          {savingEntry ? <span style={{ opacity: 0.75 }}>Guardando…</span> : <span style={{ opacity: 0.75 }}>/ jugador</span>}
         </div>
       </div>
 
       <hr style={hr} />
 
-      {/* Settings */}
+      {/* Prize pool summary */}
       <section style={{ marginBottom: 18 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Settings</h2>
-        {!settings ? (
-          <div style={{ opacity: 0.75 }}>Cargando settings…</div>
-        ) : (
-          <div style={settingsRow}>
-            <Stat label="Entry" value={`$${settings.entryFee ?? 0}`} />
-            <Stat label="Birdie" value={`$${settings.birdiePay ?? 0}`} />
-            <Stat label="Eagle" value={`$${settings.eaglePay ?? 0}`} />
-            <Stat label="Albatross" value={`$${settings.albatrossPay ?? 0}`} />
-            <Stat label="Greenie" value={`$${settings.greeniePay ?? 0}`} />
+        <h2 style={{ margin: "0 0 8px 0" }}>Entry Pool (Global)</h2>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={statPill}>
+            <div style={statLabel}>Jugadores</div>
+            <div style={statValue}>{totalPlayers}</div>
           </div>
-        )}
+
+          <div style={statPill}>
+            <div style={statLabel}>Entry / jugador</div>
+            <div style={statValue}>${entryFee}</div>
+          </div>
+
+          <div style={statPill}>
+            <div style={statLabel}>Prize Pool</div>
+            <div style={statValue}>${prizes.pool}</div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+          {prizes.awards.map((a, idx) => (
+            <div key={idx} style={awardRow}>
+              <div style={{ fontWeight: 950 }}>{a.label}</div>
+              <div style={{ opacity: 0.9 }}>
+                <b>{a.name || "-"}</b> · {a.meta}
+              </div>
+              <div style={{ fontWeight: 950 }}>${a.amount}</div>
+            </div>
+          ))}
+          <div style={{ opacity: 0.65, fontSize: 12 }}>
+            Reglas: 50% 1º Stableford · 30% 2º Stableford · 20% 1º Net (excluye ganadores previos).
+          </div>
+        </div>
       </section>
 
       {/* Leaderboards */}
@@ -400,7 +470,7 @@ export default function Session() {
                 </thead>
                 <tbody>
                   {stablefordRows.slice(0, 30).map((r, i) => (
-                    <tr key={`${r.playerId}-${i}`}>
+                    <tr key={`${r.playerKey}-${i}`}>
                       <td style={miniTd}>{i + 1}</td>
                       <td style={miniTdLeft}>{r.name}</td>
                       <td style={miniTd}>{r.hcp}</td>
@@ -431,7 +501,7 @@ export default function Session() {
                 </thead>
                 <tbody>
                   {netRows.slice(0, 30).map((r, i) => (
-                    <tr key={`${r.playerId}-${i}`}>
+                    <tr key={`${r.playerKey}-${i}`}>
                       <td style={miniTd}>{i + 1}</td>
                       <td style={miniTdLeft}>{r.name}</td>
                       <td style={miniTd}>{r.hcp}</td>
@@ -476,27 +546,16 @@ export default function Session() {
         </div>
 
         <div style={{ opacity: 0.65, fontSize: 12, marginTop: 10 }}>
-          Nota: Los <b>matches</b>, <b>greenies</b> y demás apuestas se ven dentro de cada grupo.
+          Nota: Birdies/Eagles/Albatross/Greenies y apuestas de matches son <b>por grupo</b>.
         </div>
       </section>
     </div>
   );
 }
 
-function Stat({ label, value }) {
-  return (
-    <div style={statPill}>
-      <div style={{ opacity: 0.75, fontSize: 12, fontWeight: 900 }}>{label}</div>
-      <div style={{ fontWeight: 950, fontSize: 14 }}>{value}</div>
-    </div>
-  );
-}
-
-// ---------- Group card (no matches here) ----------
 function GroupCard({ group, state, onOpen }) {
   const players = state?.players || [];
-  // Optional: if you track scores by hole you could compute completion here later.
-  // const scores = state?.scores || {};
+  const greenieLabel = state?.groupSettings?.greenieLabel || state?.greenieLabel || "Greenie";
 
   return (
     <div style={groupCard}>
@@ -507,7 +566,8 @@ function GroupCard({ group, state, onOpen }) {
             <span style={{ opacity: 0.7, fontWeight: 700 }}>(order {group.order})</span>
           </div>
           <div style={{ opacity: 0.75, marginTop: 6 }}>
-            Jugadores: <b>{players.length}</b> / 6
+            Jugadores: <b>{players.length}</b> / 6 · {greenieLabel}:{" "}
+            <b>{Object.keys(state?.greenies || {}).length}</b>
           </div>
         </div>
         <button style={btnPrimary} onClick={onOpen}>Abrir Scorecard →</button>
@@ -575,7 +635,7 @@ const select = {
 };
 
 const inputSmall = {
-  width: 90,
+  width: 110,
   padding: "10px 12px",
   borderRadius: 14,
   border: "1px solid #2a2a2a",
@@ -626,17 +686,24 @@ const groupCard = {
   background: "#0f0f0f",
 };
 
-const settingsRow = {
-  display: "flex",
-  gap: 10,
-  flexWrap: "wrap",
-  opacity: 0.95,
-};
-
 const statPill = {
   padding: "10px 12px",
   borderRadius: 16,
   border: "1px solid #242424",
   background: "#0f0f0f",
-  minWidth: 110,
+  minWidth: 150,
+};
+
+const statLabel = { opacity: 0.75, fontSize: 12, fontWeight: 900 };
+const statValue = { fontWeight: 950, fontSize: 16 };
+
+const awardRow = {
+  display: "grid",
+  gridTemplateColumns: "1.1fr 2fr 0.7fr",
+  gap: 10,
+  alignItems: "center",
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid #222",
+  background: "#0f0f0f",
 };

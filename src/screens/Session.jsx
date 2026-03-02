@@ -20,6 +20,9 @@ import { auth } from "../firebase/auth";
 import {
   COURSE_DATA,
   computeLeaderboards,
+  computeMatchResultForPair,
+  fmtMatch,
+  fmtMoney,
   computeEntryPrizes,
 } from "../lib/compute";
 
@@ -28,36 +31,24 @@ const COURSES = [
   { id: "la-loma", label: "La Loma Golf" },
 ];
 
-const DEFAULT_SETTINGS = {
-  courseId: "campestre-slp",
-  hcpPercent: 100,
-  entryFee: 0,
-};
-
 export default function Session() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
 
   const [session, setSession] = useState(null);
-  const [settings, setSettings] = useState(null);
+  const [settings, setSettings] = useState(null); // settings/main (entry fee)
   const [groups, setGroups] = useState([]);
 
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
-  const [savingHcp, setSavingHcp] = useState(false);
-  const [savingEntry, setSavingEntry] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
+  const [savingEntry, setSavingEntry] = useState(false);
 
   const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
 
   const sessionRef = useMemo(() => {
     if (!sessionId) return null;
     return doc(db, "sessions", sessionId);
-  }, [sessionId]);
-
-  const settingsRef = useMemo(() => {
-    if (!sessionId) return null;
-    return doc(db, "sessions", sessionId, "settings", "main");
   }, [sessionId]);
 
   useEffect(() => {
@@ -68,30 +59,10 @@ export default function Session() {
   }, [sessionRef]);
 
   useEffect(() => {
-    if (!settingsRef) return;
-    return onSnapshot(settingsRef, (snap) => {
-      if (snap.exists()) setSettings({ ...DEFAULT_SETTINGS, ...snap.data() });
-      else setSettings(null);
-    });
-  }, [settingsRef]);
-
-  useEffect(() => {
-    if (!settingsRef) return;
-    (async () => {
-      try {
-        const s = await getDoc(settingsRef);
-        if (!s.exists()) {
-          await setDoc(settingsRef, {
-            ...DEFAULT_SETTINGS,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } catch (e) {
-        console.error("settings init failed", e);
-      }
-    })();
-  }, [settingsRef]);
+    if (!sessionId) return;
+    const settingsRef = doc(db, "sessions", sessionId, "settings", "main");
+    return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -102,19 +73,11 @@ export default function Session() {
     });
   }, [sessionId]);
 
+  // Subscribe to each group's state/main
   useEffect(() => {
     if (!sessionId) return;
 
     const unsubs = [];
-    const groupIds = new Set(groups.map((g) => g.id));
-
-    setGroupsStateMap((prev) => {
-      const next = {};
-      Object.keys(prev).forEach((gid) => {
-        if (groupIds.has(gid)) next[gid] = prev[gid];
-      });
-      return next;
-    });
 
     groups.forEach((g) => {
       const ref = doc(db, "sessions", sessionId, "groups", g.id, "state", "main");
@@ -128,27 +91,11 @@ export default function Session() {
     return () => unsubs.forEach((u) => u && u());
   }, [sessionId, groups]);
 
-  const effectiveSettings = settings || DEFAULT_SETTINGS;
-
-  const courseId = effectiveSettings.courseId || "campestre-slp";
-  const hcpPercent = Number.isFinite(effectiveSettings.hcpPercent)
-    ? effectiveSettings.hcpPercent
-    : 100;
-  const entryFee = Number.isFinite(effectiveSettings.entryFee)
-    ? effectiveSettings.entryFee
-    : 0;
-
+  const courseId = session?.courseId || "campestre-slp";
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
-  const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
+  const hcpPercent = session?.hcpPercent ?? 100;
 
-  const totalPlayers = useMemo(() => {
-    let n = 0;
-    for (const g of groups) {
-      const st = groupsStateMap[g.id];
-      n += (st?.players?.length || 0);
-    }
-    return n;
-  }, [groups, groupsStateMap]);
+  const entryFee = settings?.entryFee ?? 0;
 
   const copySessionId = async () => {
     try {
@@ -159,12 +106,20 @@ export default function Session() {
     }
   };
 
+  const ensureSettingsDoc = async () => {
+    if (!sessionId) return;
+    const ref = doc(db, "sessions", sessionId, "settings", "main");
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, { entryFee: 0, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+    }
+  };
+
   const changeCourse = async (newCourseId) => {
-    if (!settingsRef) return;
+    if (!sessionRef) return;
     setSavingCourse(true);
     try {
-      await updateDoc(settingsRef, { courseId: newCourseId, updatedAt: serverTimestamp() });
-      await updateDoc(doc(db, "sessions", sessionId), { updatedAt: serverTimestamp() });
+      await updateDoc(sessionRef, { courseId: newCourseId, updatedAt: serverTimestamp() });
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar el campo");
@@ -174,30 +129,27 @@ export default function Session() {
   };
 
   const changeHcpPercent = async (value) => {
-    if (!settingsRef) return;
-    setSavingHcp(true);
+    if (!sessionRef) return;
     const v = Math.max(0, Math.min(100, parseInt(value || "0", 10)));
     try {
-      await updateDoc(settingsRef, { hcpPercent: v, updatedAt: serverTimestamp() });
-      await updateDoc(doc(db, "sessions", sessionId), { updatedAt: serverTimestamp() });
+      await updateDoc(sessionRef, { hcpPercent: v, updatedAt: serverTimestamp() });
     } catch (e) {
       console.error(e);
       alert(e?.message || "No se pudo actualizar handicap %");
-    } finally {
-      setSavingHcp(false);
     }
   };
 
   const changeEntryFee = async (value) => {
-    if (!settingsRef) return;
+    if (!sessionId) return;
     setSavingEntry(true);
-    const v = Math.max(0, parseInt(value || "0", 10));
     try {
-      await updateDoc(settingsRef, { entryFee: v, updatedAt: serverTimestamp() });
-      await updateDoc(doc(db, "sessions", sessionId), { updatedAt: serverTimestamp() });
+      await ensureSettingsDoc();
+      const ref = doc(db, "sessions", sessionId, "settings", "main");
+      const v = Math.max(0, parseInt(value || "0", 10));
+      await updateDoc(ref, { entryFee: v, updatedAt: serverTimestamp() });
     } catch (e) {
       console.error(e);
-      alert(e?.message || "No se pudo actualizar entry");
+      alert(e?.message || "No se pudo actualizar entry fee");
     } finally {
       setSavingEntry(false);
     }
@@ -228,13 +180,13 @@ export default function Session() {
     }
   };
 
+  // ---------- History snapshot ----------
   const buildSnapshot = async () => {
     const sessionSnap = await getDoc(doc(db, "sessions", sessionId));
     const sessionData = sessionSnap.exists() ? sessionSnap.data() : {};
 
     const settingsSnap = await getDoc(doc(db, "sessions", sessionId, "settings", "main"));
-    const settingsDataRaw = settingsSnap.exists() ? settingsSnap.data() : {};
-    const settingsData = { ...DEFAULT_SETTINGS, ...settingsDataRaw };
+    const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
 
     const groupsSnap = await getDocs(
       query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc"))
@@ -252,8 +204,8 @@ export default function Session() {
       });
     }
 
-    const snapshotCourseId = settingsData.courseId || "campestre-slp";
-    const snapshotHcpPercent = settingsData.hcpPercent ?? 100;
+    const snapshotCourseId = sessionData?.courseId || "campestre-slp";
+    const snapshotHcpPercent = sessionData?.hcpPercent ?? 100;
 
     const { stablefordRows, netRows } = computeLeaderboards({
       groupsFull,
@@ -261,24 +213,48 @@ export default function Session() {
       hcpPercent: snapshotHcpPercent,
     });
 
-    const totalPlayersSnap = groupsFull.reduce((acc, g) => acc + (g.players?.length || 0), 0);
+    const matchesByGroup = {};
+    for (const g of groupsFull) {
+      const ps = g.players || [];
+      const sc = g.scores || {};
+      const res = [];
+
+      for (let i = 0; i < ps.length; i++) {
+        for (let j = i + 1; j < ps.length; j++) {
+          const a = ps[i];
+          const b = ps[j];
+          const r = computeMatchResultForPair({
+            a,
+            b,
+            scores: sc,
+            courseId: snapshotCourseId,
+          });
+          res.push(r);
+        }
+      }
+      matchesByGroup[g.id] = res;
+    }
+
     const prizes = computeEntryPrizes({
-      stablefordRows,
-      netRows,
-      entryFee: settingsData.entryFee ?? 0,
-      totalPlayers: totalPlayersSnap,
+      groupsFull,
+      courseId: snapshotCourseId,
+      hcpPercent: snapshotHcpPercent,
+      entryFee: settingsData?.entryFee ?? 0,
     });
 
     return {
       session: {
         name: sessionData?.name || "",
         status: sessionData?.status || "",
+        courseId: snapshotCourseId,
+        hcpPercent: snapshotHcpPercent,
       },
       settings: settingsData,
       groups: groupsFull,
       computed: {
         leaderboardStableford: stablefordRows,
         leaderboardNet: netRows,
+        matchesByGroup,
         entryPrizes: prizes,
       },
     };
@@ -312,8 +288,11 @@ export default function Session() {
     );
   }
 
-  if (!session || !settings) return <div style={page}>Cargando sesión...</div>;
+  if (!session) return <div style={page}>Cargando sesión...</div>;
 
+  const courseLabel = (COURSES.find((c) => c.id === courseId)?.label) || courseId;
+
+  // groupsFull from live map
   const groupsFull = groups.map((g) => ({
     id: g.id,
     name: g.name || g.id,
@@ -328,117 +307,105 @@ export default function Session() {
   });
 
   const prizes = computeEntryPrizes({
-    stablefordRows,
-    netRows,
+    groupsFull,
+    courseId,
+    hcpPercent,
     entryFee,
-    totalPlayers,
   });
 
   return (
     <div style={page}>
-      <div style={stickyHeader}>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <h1 style={{ margin: 0, fontSize: 26, fontWeight: 900, lineHeight: 1.1 }}>
-              {session.name || "Sesión"}
-            </h1>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900 }}>
+            {session.name || "Sesión"}
+          </h1>
 
-            <div style={{ opacity: 0.85, marginTop: 6, fontSize: 13 }}>
-              Status: <b>{session.status || "live"}</b> · Campo: <b>{courseLabel}</b> · %Hcp: <b>{hcpPercent}</b>
-            </div>
-
-            <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <code style={pillCode}>{sessionId}</code>
-              <button onClick={copySessionId} style={btn}>Copiar</button>
-              <button onClick={saveHistory} disabled={savingHistory} style={btnPrimary}>
-                {savingHistory ? "Guardando..." : "💾 Historial"}
-              </button>
-            </div>
+          <div style={{ opacity: 0.85, marginTop: 6 }}>
+            Status: <b>{session.status || "live"}</b> · Campo: <b>{courseLabel}</b>
           </div>
 
-          <button onClick={() => navigate("/")} style={btn}>← Home</button>
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <code style={pillCode}>{sessionId}</code>
+            <button onClick={copySessionId} style={btn}>Copiar Session ID</button>
+            <button onClick={saveHistory} disabled={savingHistory} style={btnPrimary}>
+              {savingHistory ? "Guardando..." : "💾 Guardar Historial"}
+            </button>
+          </div>
+
+          {/* Campo + %Hcp */}
+          <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 900 }}>Campo:</div>
+            <select
+              value={courseId}
+              onChange={(e) => changeCourse(e.target.value)}
+              style={select}
+              disabled={savingCourse}
+            >
+              {COURSES.map((c) => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+            {savingCourse ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
+
+            <div style={{ width: 10 }} />
+
+            <div style={{ fontWeight: 900 }}>% Handicap (Net/STB):</div>
+            <input
+              type="number"
+              defaultValue={hcpPercent}
+              onBlur={(e) => changeHcpPercent(e.target.value)}
+              style={inputSmall}
+            />
+            <span style={{ opacity: 0.75 }}>matches siempre 100%</span>
+          </div>
+
+          {/* Entry Fee global */}
+          <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 900 }}>Entry (polla) por jugador:</div>
+            <input
+              type="number"
+              defaultValue={entryFee}
+              onBlur={(e) => changeEntryFee(e.target.value)}
+              style={inputSmall}
+            />
+            {savingEntry ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
+            <span style={{ opacity: 0.75 }}>
+              Pool: <b>${Math.round(prizes.pool)}</b> ({prizes.totalPlayers} jugadores)
+            </span>
+          </div>
+
+          {/* Winners */}
+          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+            <div style={card}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Premios Entry (50/30/20)</div>
+              <div style={{ opacity: 0.85, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                <div>
+                  🥇 STB 1º: <b>{prizes.winners.stableford1?.name || "-"}</b>{" "}
+                  <span style={{ opacity: 0.75 }}>({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0)})</span>
+                </div>
+                <div>
+                  🥈 STB 2º: <b>{prizes.winners.stableford2?.name || "-"}</b>{" "}
+                  <span style={{ opacity: 0.75 }}>({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford2?.playerKey] || 0)})</span>
+                </div>
+                <div>
+                  🏆 Net 1º: <b>{prizes.winners.net1?.name || "-"}</b>{" "}
+                  <span style={{ opacity: 0.75 }}>({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.net1?.playerKey] || 0)})</span>
+                </div>
+              </div>
+              <div style={{ opacity: 0.65, marginTop: 8, fontSize: 12 }}>
+                Net 1º excluye a los dos ganadores de Stableford.
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 900 }}>Campo:</div>
-          <select
-            value={courseId}
-            onChange={(e) => changeCourse(e.target.value)}
-            style={select}
-            disabled={savingCourse}
-          >
-            {COURSES.map((c) => (
-              <option key={c.id} value={c.id}>{c.label}</option>
-            ))}
-          </select>
-          {savingCourse ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
-
-          <div style={{ width: 6 }} />
-
-          <div style={{ fontWeight: 900 }}>% Handicap:</div>
-          <input
-            type="number"
-            value={hcpPercent}
-            onChange={(e) => changeHcpPercent(e.target.value)}
-            onBlur={(e) => changeHcpPercent(e.target.value)}
-            style={inputSmall}
-            inputMode="numeric"
-          />
-          {savingHcp ? <span style={{ opacity: 0.75 }}>Guardando…</span> : <span style={{ opacity: 0.75 }}>strokes</span>}
-
-          <div style={{ width: 6 }} />
-
-          <div style={{ fontWeight: 900 }}>Entry (global):</div>
-          <input
-            type="number"
-            value={entryFee}
-            onChange={(e) => changeEntryFee(e.target.value)}
-            onBlur={(e) => changeEntryFee(e.target.value)}
-            style={inputSmall}
-            inputMode="numeric"
-          />
-          {savingEntry ? <span style={{ opacity: 0.75 }}>Guardando…</span> : <span style={{ opacity: 0.75 }}>/ jugador</span>}
-        </div>
+        <button onClick={() => navigate("/")} style={btn}>← Home</button>
       </div>
 
       <hr style={hr} />
 
-      <section style={{ marginBottom: 18 }}>
-        <h2 style={{ margin: "0 0 8px 0" }}>Entry Pool (Global)</h2>
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <div style={statPill}>
-            <div style={statLabel}>Jugadores</div>
-            <div style={statValue}>{totalPlayers}</div>
-          </div>
-
-          <div style={statPill}>
-            <div style={statLabel}>Entry / jugador</div>
-            <div style={statValue}>${entryFee}</div>
-          </div>
-
-          <div style={statPill}>
-            <div style={statLabel}>Prize Pool</div>
-            <div style={statValue}>${prizes.pool}</div>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          {prizes.awards.map((a, idx) => (
-            <div key={idx} style={awardRow}>
-              <div style={{ fontWeight: 950 }}>{a.label}</div>
-              <div style={{ opacity: 0.9 }}>
-                <b>{a.name || "-"}</b> · {a.meta}
-              </div>
-              <div style={{ fontWeight: 950 }}>${a.amount}</div>
-            </div>
-          ))}
-          <div style={{ opacity: 0.65, fontSize: 12 }}>
-            Reglas: 50% 1º Stableford · 30% 2º Stableford · 20% 1º Net (excluye ganadores previos).
-          </div>
-        </div>
-      </section>
-
+      {/* Leaderboards */}
       <section style={{ marginBottom: 18 }}>
         <h2 style={{ margin: "0 0 8px 0" }}>Leaderboard (General)</h2>
 
@@ -457,7 +424,7 @@ export default function Session() {
                   </tr>
                 </thead>
                 <tbody>
-                  {stablefordRows.slice(0, 30).map((r, i) => (
+                  {stablefordRows.slice(0, 50).map((r, i) => (
                     <tr key={`${r.playerKey}-${i}`}>
                       <td style={miniTd}>{i + 1}</td>
                       <td style={miniTdLeft}>{r.name}</td>
@@ -488,7 +455,7 @@ export default function Session() {
                   </tr>
                 </thead>
                 <tbody>
-                  {netRows.slice(0, 30).map((r, i) => (
+                  {netRows.slice(0, 50).map((r, i) => (
                     <tr key={`${r.playerKey}-${i}`}>
                       <td style={miniTd}>{i + 1}</td>
                       <td style={miniTdLeft}>{r.name}</td>
@@ -509,6 +476,7 @@ export default function Session() {
 
       <hr style={hr} />
 
+      {/* Groups */}
       <section>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h2 style={{ margin: 0 }}>Groups</h2>
@@ -525,6 +493,7 @@ export default function Session() {
               <GroupCard
                 key={g.id}
                 group={g}
+                courseId={courseId}
                 state={groupsStateMap[g.id]}
                 onOpen={() => navigate(`/session/${sessionId}/group/${g.id}`)}
               />
@@ -536,44 +505,169 @@ export default function Session() {
   );
 }
 
-function GroupCard({ group, state, onOpen }) {
+function GroupCard({ group, courseId, state, onOpen }) {
   const players = state?.players || [];
-  const greens = state?.greens || state?.greenies || {}; // compatibility
+  const scores = state?.scores || {};
+
+  const matches = [];
+  for (let i = 0; i < players.length; i++) {
+    for (let j = i + 1; j < players.length; j++) {
+      const a = players[i];
+      const b = players[j];
+      const r = computeMatchResultForPair({
+        a,
+        b,
+        scores,
+        courseId,
+      });
+      matches.push(r);
+    }
+  }
+
   return (
     <div style={groupCard}>
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 900, fontSize: 18 }}>
             {group.name || group.id}{" "}
             <span style={{ opacity: 0.7, fontWeight: 700 }}>(order {group.order})</span>
           </div>
           <div style={{ opacity: 0.75, marginTop: 6 }}>
-            Jugadores: <b>{players.length}</b> / 6 · Greens capturados: <b>{Object.keys(greens || {}).length}</b>
+            Jugadores: <b>{players.length}</b> / 6
           </div>
         </div>
         <button style={btnPrimary} onClick={onOpen}>Abrir Scorecard →</button>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div style={{ fontWeight: 900, marginBottom: 6 }}>Cruces (Match Play)</div>
+        {matches.length === 0 ? (
+          <div style={{ opacity: 0.7 }}>Aún no hay cruces (agrega jugadores).</div>
+        ) : (
+          <div style={{ display: "grid", gap: 6 }}>
+            {matches.map((m, idx) => {
+              const c = m.total > 0 ? "#86efac" : m.total < 0 ? "#fca5a5" : "#d4d4d4";
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "10px 12px",
+                    border: "1px solid #2a2a2a",
+                    borderRadius: 14,
+                    background: "#0c0c0c",
+                  }}
+                >
+                  <div style={{ fontWeight: 800, minWidth: 140 }}>{m.label}</div>
+                  <div style={{ display: "flex", gap: 10, fontWeight: 900, color: c }}>
+                    <span>F9 {fmtMatch(m.front)}</span>
+                    <span>B9 {fmtMatch(m.back)}</span>
+                    <span>T {fmtMatch(m.total)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-const page = { padding: 16, fontFamily: "system-ui", maxWidth: 1100, margin: "0 auto", color: "white" };
-const stickyHeader = { position: "sticky", top: 0, zIndex: 20, background: "#0b0b0b", paddingBottom: 10, borderBottom: "1px solid #1f1f1f" };
+// ---------- styles ----------
+const page = {
+  padding: 16,
+  fontFamily: "system-ui",
+  maxWidth: 1100,
+  margin: "0 auto",
+  color: "white",
+};
+
 const hr = { margin: "18px 0", borderColor: "#2a2a2a" };
-const pillCode = { padding: "8px 12px", borderRadius: 14, background: "#0f0f0f", border: "1px solid #2a2a2a", color: "white", fontWeight: 900, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" };
-const btn = { padding: "10px 14px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#141414", color: "white", fontWeight: 900, cursor: "pointer" };
-const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
-const select = { padding: "10px 12px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900, minWidth: 220 };
-const inputSmall = { width: 110, padding: "10px 12px", borderRadius: 14, border: "1px solid #2a2a2a", background: "#111", color: "white", fontWeight: 900 };
-const card = { border: "1px solid #2a2a2a", borderRadius: 18, padding: 14, background: "#0f0f0f" };
+
+const pillCode = {
+  padding: "8px 12px",
+  borderRadius: 14,
+  background: "#0f0f0f",
+  border: "1px solid #2a2a2a",
+  color: "white",
+  fontWeight: 900,
+};
+
+const btn = {
+  padding: "10px 14px",
+  borderRadius: 14,
+  border: "1px solid #2a2a2a",
+  background: "#141414",
+  color: "white",
+  fontWeight: 900,
+  cursor: "pointer",
+};
+
+const btnPrimary = {
+  ...btn,
+  background: "#1f2937",
+  border: "1px solid #374151",
+};
+
+const select = {
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid #2a2a2a",
+  background: "#111",
+  color: "white",
+  fontWeight: 900,
+  minWidth: 220,
+};
+
+const inputSmall = {
+  width: 90,
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid #2a2a2a",
+  background: "#111",
+  color: "white",
+  fontWeight: 900,
+};
+
+const card = {
+  border: "1px solid #2a2a2a",
+  borderRadius: 18,
+  padding: 14,
+  background: "#0f0f0f",
+};
+
 const cardTitle = { fontWeight: 900, marginBottom: 10, fontSize: 16 };
-const miniTable = { width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 520 };
-const miniTh = { textAlign: "center", padding: 8, borderBottom: "1px solid #2a2a2a", opacity: 0.85, whiteSpace: "nowrap" };
+
+const miniTable = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: 13,
+  minWidth: 520,
+};
+
+const miniTh = {
+  textAlign: "center",
+  padding: 8,
+  borderBottom: "1px solid #2a2a2a",
+  opacity: 0.85,
+};
+
 const miniThLeft = { ...miniTh, textAlign: "left" };
-const miniTd = { textAlign: "center", padding: 8, borderBottom: "1px solid #1f1f1f", whiteSpace: "nowrap" };
-const miniTdLeft = { ...miniTd, textAlign: "left", whiteSpace: "nowrap" };
-const groupCard = { border: "1px solid #2a2a2a", borderRadius: 18, padding: 14, background: "#0f0f0f" };
-const statPill = { padding: "10px 12px", borderRadius: 16, border: "1px solid #242424", background: "#0f0f0f", minWidth: 150 };
-const statLabel = { opacity: 0.75, fontSize: 12, fontWeight: 900 };
-const statValue = { fontWeight: 950, fontSize: 16 };
-const awardRow = { display: "grid", gridTemplateColumns: "1.1fr 2fr 0.7fr", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: 14, border: "1px solid #222", background: "#0f0f0f" };
+
+const miniTd = {
+  textAlign: "center",
+  padding: 8,
+  borderBottom: "1px solid #1f1f1f",
+};
+
+const miniTdLeft = { ...miniTd, textAlign: "left" };
+
+const groupCard = {
+  border: "1px solid #2a2a2a",
+  borderRadius: 18,
+  padding: 14,
+  background: "#0f0f0f",
+};

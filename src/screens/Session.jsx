@@ -315,9 +315,17 @@ export default function Session() {
 
   return (
     <div style={page}>
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <div style={{ flex: 1 }}>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900 }}>
+      <style>{`
+        .ag-row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+        @media (max-width:520px){
+          .ag-row{ gap:8px; }
+          .ag-h1{ font-size:24px !important; }
+        }
+      `}</style>
+
+      <div style={topHeader}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 className="ag-h1" style={{ margin: 0, fontSize: 28, fontWeight: 950, letterSpacing: -0.4 }}>
             {session.name || "Sesión"}
           </h1>
 
@@ -325,7 +333,7 @@ export default function Session() {
             Status: <b>{session.status || "live"}</b> · Campo: <b>{courseLabel}</b>
           </div>
 
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div className="ag-row" style={{ marginTop: 12 }}>
             <code style={pillCode}>{sessionId}</code>
             <button onClick={copySessionId} style={btn}>Copiar Session ID</button>
             <button onClick={saveHistory} disabled={savingHistory} style={btnPrimary}>
@@ -333,9 +341,8 @@ export default function Session() {
             </button>
           </div>
 
-          {/* Campo + %Hcp */}
-          <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 900 }}>Campo:</div>
+          <div className="ag-row" style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 950 }}>Campo:</div>
             <select
               value={courseId}
               onChange={(e) => changeCourse(e.target.value)}
@@ -348,21 +355,20 @@ export default function Session() {
             </select>
             {savingCourse ? <span style={{ opacity: 0.75 }}>Guardando…</span> : null}
 
-            <div style={{ width: 10 }} />
+            <div style={{ width: 6 }} />
 
-            <div style={{ fontWeight: 900 }}>% Handicap (Net/STB):</div>
+            <div style={{ fontWeight: 950 }}>% Handicap (Net/STB):</div>
             <input
               type="number"
               defaultValue={hcpPercent}
               onBlur={(e) => changeHcpPercent(e.target.value)}
               style={inputSmall}
             />
-            <span style={{ opacity: 0.75 }}>matches siempre 100%</span>
+            <span style={{ opacity: 0.7, fontSize: 12 }}>matches siempre 100%</span>
           </div>
 
-          {/* Entry Fee global */}
-          <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 900 }}>Entry (polla) por jugador:</div>
+          <div className="ag-row" style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 950 }}>Entry (polla) por jugador:</div>
             <input
               type="number"
               defaultValue={entryFee}
@@ -375,11 +381,10 @@ export default function Session() {
             </span>
           </div>
 
-          {/* Winners */}
-          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          <div style={{ marginTop: 10 }}>
             <div style={card}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Premios Entry (50/30/20)</div>
-              <div style={{ opacity: 0.85, display: "flex", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 950, marginBottom: 6 }}>Premios Entry (50/30/20)</div>
+              <div style={{ opacity: 0.9, display: "flex", gap: 14, flexWrap: "wrap" }}>
                 <div>
                   🥇 STB 1º: <b>{prizes.winners.stableford1?.name || "-"}</b>{" "}
                   <span style={{ opacity: 0.75 }}>({fmtMoney(prizes.payoutsByPlayerKey[prizes.winners.stableford1?.playerKey] || 0)})</span>
@@ -478,7 +483,7 @@ export default function Session() {
 
       {/* Groups */}
       <section>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Groups</h2>
           <button onClick={addGroup} disabled={creatingGroup} style={btn}>
             {creatingGroup ? "Creando..." : "+ Agregar grupo"}
@@ -526,9 +531,9 @@ function GroupCard({ group, courseId, state, onOpen }) {
 
   return (
     <div style={groupCard}>
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 900, fontSize: 18 }}>
+          <div style={{ fontWeight: 950, fontSize: 18 }}>
             {group.name || group.id}{" "}
             <span style={{ opacity: 0.7, fontWeight: 700 }}>(order {group.order})</span>
           </div>
@@ -540,7 +545,7 @@ function GroupCard({ group, courseId, state, onOpen }) {
       </div>
 
       <div style={{ marginTop: 12 }}>
-        <div style={{ fontWeight: 900, marginBottom: 6 }}>Cruces (Match Play)</div>
+        <div style={{ fontWeight: 950, marginBottom: 6 }}>Cruces (Match Play)</div>
         {matches.length === 0 ? (
           <div style={{ opacity: 0.7 }}>Aún no hay cruces (agrega jugadores).</div>
         ) : (
@@ -558,10 +563,11 @@ function GroupCard({ group, courseId, state, onOpen }) {
                     border: "1px solid #2a2a2a",
                     borderRadius: 14,
                     background: "#0c0c0c",
+                    flexWrap: "wrap",
                   }}
                 >
                   <div style={{ fontWeight: 800, minWidth: 140 }}>{m.label}</div>
-                  <div style={{ display: "flex", gap: 10, fontWeight: 900, color: c }}>
+                  <div style={{ display: "flex", gap: 10, fontWeight: 950, color: c }}>
                     <span>F9 {fmtMatch(m.front)}</span>
                     <span>B9 {fmtMatch(m.back)}</span>
                     <span>T {fmtMatch(m.total)}</span>
@@ -583,6 +589,13 @@ const page = {
   maxWidth: 1100,
   margin: "0 auto",
   color: "white",
+};
+
+const topHeader = {
+  display: "flex",
+  gap: 12,
+  alignItems: "flex-start",
+  flexWrap: "wrap",
 };
 
 const hr = { margin: "18px 0", borderColor: "#2a2a2a" };

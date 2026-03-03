@@ -6,6 +6,7 @@ import { auth } from "../firebase/auth";
 import { db } from "../firebase/db";
 import { useNavigate } from "react-router-dom";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
+import { Capacitor } from "@capacitor/core";
 
 const LS_KEY = "apuestasGolf_recentSessions";
 
@@ -85,6 +86,9 @@ export default function Home() {
   const navigate = useNavigate();
   const isBusy = loadingGoogle || loadingApple;
 
+  const platform = Capacitor.getPlatform(); // "ios" | "android" | "web"
+  const showApple = platform === "ios";
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
@@ -131,7 +135,10 @@ export default function Home() {
   };
 
   const loginApple = async () => {
+    // Hard guard: Apple only on iOS
+    if (Capacitor.getPlatform() !== "ios") return;
     if (isBusy) return;
+
     setLoadingApple(true);
     try {
       await FirebaseAuthentication.signInWithApple();
@@ -143,8 +150,12 @@ export default function Home() {
   };
 
   const logout = async () => {
-    try { await FirebaseAuthentication.signOut(); } catch {}
-    try { await signOut(auth); } catch {}
+    try {
+      await FirebaseAuthentication.signOut();
+    } catch {}
+    try {
+      await signOut(auth);
+    } catch {}
     setJoinId("");
   };
 
@@ -225,7 +236,9 @@ export default function Home() {
         </div>
 
         {user ? (
-          <button onClick={logout} style={btnGhost}>Logout</button>
+          <button onClick={logout} style={btnGhost}>
+            Logout
+          </button>
         ) : null}
       </header>
 
@@ -233,9 +246,7 @@ export default function Home() {
         {!user ? (
           <div style={{ ...card, width: "min(520px, 100%)" }}>
             <div style={cardTitle}>Entrar</div>
-            <div style={{ opacity: 0.8, marginTop: 6 }}>
-              Inicia sesión para crear y administrar sesiones.
-            </div>
+            <div style={{ opacity: 0.8, marginTop: 6 }}>Inicia sesión para crear y administrar sesiones.</div>
 
             <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
               <button onClick={loginGoogle} disabled={isBusy} style={btnProvider}>
@@ -243,15 +254,12 @@ export default function Home() {
                 <span>{loadingGoogle ? "Entrando..." : "Continuar con Google"}</span>
               </button>
 
-              <button onClick={loginApple} disabled={isBusy} style={btnProviderApple}>
-                <AppleIcon />
-                <span>{loadingApple ? "Entrando..." : "Continuar con Apple"}</span>
-              </button>
-
-              {/* (Removed long Apple disclaimer; keep it short) */}
-              <div style={{ opacity: 0.6, fontSize: 12, lineHeight: 1.35 }}>
-                Apple Sign-In requiere configuración en Apple Developer.
-              </div>
+              {showApple ? (
+                <button onClick={loginApple} disabled={isBusy} style={btnProviderApple}>
+                  <AppleIcon />
+                  <span>{loadingApple ? "Entrando..." : "Continuar con Apple"}</span>
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -282,7 +290,6 @@ export default function Home() {
                   {creating ? "Creando..." : "➕ Crear sesión"}
                 </button>
 
-                {/* (Less “legend”, more useful) */}
                 <div style={hintRow}>
                   Crea una sesión nueva con <b>Campo</b>, <b>%Hcp</b> y <b>Entry</b> global.
                 </div>
@@ -307,7 +314,9 @@ export default function Home() {
                   autoCorrect="off"
                   spellCheck={false}
                 />
-                <button onClick={pasteFromClipboard} style={btn}>Pegar</button>
+                <button onClick={pasteFromClipboard} style={btn}>
+                  Pegar
+                </button>
               </div>
 
               <div style={helperRow(joinHint.type)}>
@@ -316,21 +325,28 @@ export default function Home() {
               </div>
 
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={joinSession} style={btnPrimary} disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}>
+                <button
+                  onClick={joinSession}
+                  style={btnPrimary}
+                  disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}
+                >
                   🚀 Entrar
                 </button>
-                <button onClick={() => setJoinId("")} style={btnGhost}>Limpiar</button>
+                <button onClick={() => setJoinId("")} style={btnGhost}>
+                  Limpiar
+                </button>
               </div>
 
               {recent.length > 0 ? (
                 <div style={{ marginTop: 14 }}>
                   <div style={{ fontWeight: 950, marginBottom: 8 }}>Recientes</div>
 
-                  {/* leaderboard-not-cut: make rows wrap/scroll cleanly */}
                   <div style={recentListWrap}>
                     {recent.map((id) => (
                       <div key={id} style={recentRow}>
-                        <code style={codePill} title={id}>{id}</code>
+                        <code style={codePill} title={id}>
+                          {id}
+                        </code>
 
                         <div style={recentActions}>
                           <button
@@ -343,7 +359,11 @@ export default function Home() {
                             Abrir
                           </button>
 
-                          <button style={btnDanger} onClick={() => removeRecent(id)} aria-label="Quitar de recientes">
+                          <button
+                            style={btnDanger}
+                            onClick={() => removeRecent(id)}
+                            aria-label="Quitar de recientes"
+                          >
                             ✕
                           </button>
                         </div>
@@ -366,9 +386,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>
-                  Aquí aparecerán tus sesiones recientes.
-                </div>
+                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>Aquí aparecerán tus sesiones recientes.</div>
               )}
             </div>
           </div>
@@ -383,10 +401,22 @@ export default function Home() {
 function GoogleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 33 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.7 1.1 7.8 2.9l5.7-5.7C34.6 6 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.2-.4-3.5z"/>
-      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3 0 5.7 1.1 7.8 2.9l5.7-5.7C34.6 6 29.6 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"/>
-      <path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.5-5.2l-6.2-5.2C29.2 35.6 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.4 39.7 16.2 44 24 44z"/>
-      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-1 2.6-2.9 4.7-5.4 6.1l.1.1 6.2 5.2C35.8 40 44 34 44 24c0-1.3-.1-2.2-.4-3.5z"/>
+      <path
+        fill="#FFC107"
+        d="M43.6 20.5H42V20H24v8h11.3C33.7 33 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.7 1.1 7.8 2.9l5.7-5.7C34.6 6 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.2-.4-3.5z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3 0 5.7 1.1 7.8 2.9l5.7-5.7C34.6 6 29.6 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.2 0 10-2 13.5-5.2l-6.2-5.2C29.2 35.6 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.4 39.7 16.2 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.6 20.5H42V20H24v8h11.3c-1 2.6-2.9 4.7-5.4 6.1l.1.1 6.2 5.2C35.8 40 44 34 44 24c0-1.3-.1-2.2-.4-3.5z"
+      />
     </svg>
   );
 }
@@ -394,7 +424,7 @@ function GoogleIcon() {
 function AppleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
-      <path d="M16.365 1.43c0 1.14-.42 2.2-1.25 3.13-.85.95-2.25 1.7-3.45 1.6-.15-1.12.46-2.3 1.22-3.16.84-.96 2.3-1.67 3.48-1.57zM20.8 17.15c-.55 1.27-.82 1.83-1.53 2.95-.99 1.53-2.39 3.44-4.11 3.46-1.53.02-1.93-1-4.01-1-2.08 0-2.53.98-4.06 1.02-1.72.04-3.03-1.74-4.02-3.27-2.78-4.29-3.07-9.31-1.36-11.94 1.2-1.84 3.09-2.92 4.87-2.92 1.82 0 2.96 1 4.47 1 1.47 0 2.36-1 4.48-1 1.58 0 3.25.86 4.44 2.35-3.91 2.14-3.28 7.74.83 9.35z"/>
+      <path d="M16.365 1.43c0 1.14-.42 2.2-1.25 3.13-.85.95-2.25 1.7-3.45 1.6-.15-1.12.46-2.3 1.22-3.16.84-.96 2.3-1.67 3.48-1.57zM20.8 17.15c-.55 1.27-.82 1.83-1.53 2.95-.99 1.53-2.39 3.44-4.11 3.46-1.53.02-1.93-1-4.01-1-2.08 0-2.53.98-4.06 1.02-1.72.04-3.03-1.74-4.02-3.27-2.78-4.29-3.07-9.31-1.36-11.94 1.2-1.84 3.09-2.92 4.87-2.92 1.82 0 2.96 1 4.47 1 1.47 0 2.36-1 4.48-1 1.58 0 3.25.86 4.44 2.35-3.91 2.14-3.28 7.74.83 9.35z" />
     </svg>
   );
 }
@@ -453,7 +483,13 @@ const btn = {
 
 const btnPrimary = { ...btn, background: "#1f2937", border: "1px solid #374151" };
 const btnGhost = { ...btn, background: "transparent", border: "1px solid #2a2a2a", opacity: 0.95 };
-const btnDanger = { ...btn, padding: "10px 12px", border: "1px solid #3a1a1a", background: "#170808", color: "#ffb4b4" };
+const btnDanger = {
+  ...btn,
+  padding: "10px 12px",
+  border: "1px solid #3a1a1a",
+  background: "#170808",
+  color: "#ffb4b4",
+};
 
 const btnProvider = {
   ...btn,
@@ -557,12 +593,7 @@ const helperRow = (type) => ({
       : type === "warn"
       ? "rgba(251,146,60,0.10)"
       : "rgba(148,163,184,0.08)",
-  color:
-    type === "ok"
-      ? "#bbf7d0"
-      : type === "warn"
-      ? "#fed7aa"
-      : "#e5e7eb",
+  color: type === "ok" ? "#bbf7d0" : type === "warn" ? "#fed7aa" : "#e5e7eb",
   fontSize: 12,
   fontWeight: 900,
 });

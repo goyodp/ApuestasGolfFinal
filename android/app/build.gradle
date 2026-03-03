@@ -1,6 +1,26 @@
 apply plugin: 'com.android.application'
-
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+  keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
 android {
+    signingConfigs {
+  release {
+    storeFile file(keystoreProperties["storeFile"])
+    storePassword keystoreProperties["storePassword"]
+    keyAlias keystoreProperties["keyAlias"]
+    keyPassword keystoreProperties["keyPassword"]
+  }
+}
+
+buildTypes {
+  release {
+    signingConfig signingConfigs.release
+    minifyEnabled false
+    shrinkResources false
+  }
+}
     namespace = "com.apuestas.golf"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {

@@ -12,8 +12,9 @@ export const COURSE_DATA = {
   },
 
   "la-loma": {
-    name: "La Loma Golf",
+    name: "La Loma Club de Golf (SLP)",
     parValues: [4, 4, 4, 3, 5, 5, 4, 3, 4, 4, 3, 4, 4, 4, 5, 4, 3, 5],
+    // Hoyo 7 = SI 1 (correcto)
     strokeIndexes: [11, 3, 13, 17, 7, 5, 1, 15, 9, 2, 18, 10, 16, 4, 8, 14, 12, 6],
   },
 
@@ -34,6 +35,87 @@ export const COURSE_DATA = {
     name: "PGA Riviera Maya Golf Club (Q. Roo)",
     parValues: [4, 3, 4, 5, 3, 4, 4, 5, 4, 4, 4, 4, 4, 5, 3, 5, 3, 4],
     strokeIndexes: [13, 11, 15, 5, 17, 1, 7, 3, 9, 8, 10, 16, 14, 4, 6, 2, 18, 12],
+  },
+
+  // =====================
+  // CERCA DE SLP (Centro)
+  // =====================
+
+  // --- QUERÉTARO ---
+  "san-gil": {
+    name: "Club de Golf San Gil (Qro)",
+    parValues: [5, 4, 4, 3, 4, 4, 3, 5, 4, 4, 5, 4, 3, 4, 5, 3, 4, 4],
+    strokeIndexes: [17, 5, 3, 15, 9, 11, 7, 13, 1, 8, 14, 2, 18, 12, 10, 16, 4, 6],
+  },
+
+  "provincia-juriquilla": {
+    name: "Club de Golf Provincia Juriquilla (Qro)",
+    parValues: [5, 4, 4, 4, 3, 5, 3, 5, 3, 4, 5, 3, 5, 4, 4, 4, 3, 4],
+    strokeIndexes: [9, 1, 5, 13, 15, 3, 11, 7, 17, 2, 12, 10, 8, 4, 6, 16, 14, 18],
+  },
+
+  "el-campanario": {
+    name: "El Campanario (Qro)",
+    parValues: [5, 4, 3, 4, 3, 4, 5, 4, 4, 4, 4, 3, 4, 4, 3, 5, 4, 5],
+    strokeIndexes: [5, 3, 9, 11, 13, 15, 7, 17, 1, 2, 8, 18, 16, 6, 10, 4, 12, 14],
+  },
+
+  "amanali": {
+    name: "Club de Golf Amanali (Hgo)",
+    parValues: [4, 3, 4, 5, 3, 5, 3, 5, 4, 4, 3, 4, 5, 4, 5, 4, 3, 4],
+    strokeIndexes: [5, 17, 9, 7, 13, 3, 15, 1, 11, 10, 18, 6, 2, 12, 4, 14, 16, 8],
+  },
+
+  // --- AGUASCALIENTES ---
+  "pulgas-pandas": {
+    name: "Club de Golf Pulgas Pandas (Ags)",
+    parValues: [4, 5, 3, 4, 3, 4, 5, 4, 4, 4, 5, 3, 4, 3, 4, 5, 4, 4],
+    strokeIndexes: [9, 3, 7, 15, 17, 5, 13, 11, 1, 8, 6, 12, 16, 18, 4, 14, 10, 2],
+  },
+
+  "campestre-aguascalientes": {
+    name: "Club Campestre de Aguascalientes (Ags)",
+    parValues: [4, 4, 5, 3, 4, 4, 5, 3, 4, 4, 4, 3, 5, 4, 4, 3, 5, 4],
+    strokeIndexes: [5, 11, 7, 17, 13, 9, 1, 15, 3, 10, 14, 16, 6, 12, 4, 18, 8, 2],
+  },
+
+  // --- GUADALAJARA / JALISCO ---
+  "guadalajara-country-club": {
+    name: "Guadalajara Country Club (Gdl)",
+    parValues: [5, 4, 4, 3, 4, 4, 4, 3, 5, 4, 4, 5, 4, 4, 3, 4, 3, 5],
+    strokeIndexes: [9, 13, 1, 17, 11, 3, 5, 15, 7, 12, 8, 6, 2, 4, 18, 14, 16, 10],
+  },
+
+  "las-canadas": {
+    name: "Las Cañadas Country Club (Gdl)",
+    parValues: [4, 4, 3, 4, 5, 5, 4, 4, 3, 5, 4, 3, 4, 4, 4, 5, 3, 4],
+    strokeIndexes: [9, 5, 15, 1, 3, 11, 7, 13, 17, 8, 2, 16, 12, 10, 6, 4, 18, 14],
+  },
+
+  "santa-anita": {
+    name: "Santa Anita Club de Golf (Gdl)",
+    parValues: [5, 4, 4, 4, 3, 4, 5, 4, 3, 4, 3, 4, 5, 4, 3, 4, 5, 4],
+    strokeIndexes: [11, 3, 9, 7, 15, 5, 13, 1, 17, 4, 18, 10, 2, 8, 14, 6, 12, 16],
+  },
+
+  // --- GUANAJUATO ---
+  "campestre-leon": {
+    name: "Club Campestre de León (Gto)",
+    parValues: [4, 4, 5, 3, 4, 4, 3, 4, 5, 4, 4, 5, 3, 4, 4, 3, 5, 4],
+    strokeIndexes: [9, 3, 13, 17, 15, 1, 11, 5, 7, 16, 12, 2, 18, 6, 8, 14, 4, 10],
+  },
+
+  "ventanas-san-miguel": {
+    name: "Ventanas de San Miguel (SMA, Gto)",
+    // Nota: este scorecard suma PAR 70 (35/35)
+    parValues: [5, 4, 3, 4, 3, 5, 4, 4, 3, 4, 4, 3, 4, 5, 4, 4, 3, 4],
+    strokeIndexes: [15, 3, 11, 5, 13, 1, 7, 9, 17, 14, 8, 18, 6, 4, 16, 12, 10, 2],
+  },
+
+  "malanquin": {
+    name: "Malanquín Club de Golf (SMA, Gto)",
+    parValues: [4, 3, 4, 4, 5, 4, 4, 3, 5, 4, 5, 5, 4, 3, 4, 3, 4, 4],
+    strokeIndexes: [15, 11, 3, 1, 7, 5, 17, 13, 9, 18, 8, 12, 4, 14, 16, 10, 6, 2],
   },
 };
 

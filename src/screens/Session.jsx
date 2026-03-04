@@ -13,6 +13,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  where, // ✅ NEW
 } from "firebase/firestore";
 import { db } from "../firebase/db";
 import { auth } from "../firebase/auth";
@@ -25,11 +26,6 @@ import {
   fmtMoney,
   computeEntryPrizes,
 } from "../lib/compute";
-
-const COURSES = Object.entries(COURSE_DATA).map(([id, c]) => ({
-  id,
-  label: c.name || id,
-}));
 
 /* ---------------- tiny utils ---------------- */
 
@@ -86,6 +82,36 @@ function countFilledScores(scoresObj) {
   return n;
 }
 
+// Parse "18 numbers" from CSV/space/newline/semicolon
+function parse18Numbers(raw) {
+  const nums = String(raw ?? "")
+    .replace(/\n/g, " ")
+    .replace(/;/g, ",")
+    .split(/[,\s]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => Number(x));
+  if (nums.length !== 18) return null;
+  if (!nums.every(Number.isFinite)) return null;
+  return nums;
+}
+
+function validateCoursePayload({ name, parValues, strokeIndexes }) {
+  const nm = String(name || "").trim();
+  if (nm.length < 3) return "Nombre inválido (mínimo 3 letras)";
+
+  if (!Array.isArray(parValues) || parValues.length !== 18) return "Par debe tener 18 números";
+  if (!parValues.every((p) => Number.isFinite(p) && p >= 3 && p <= 6)) return "Par inválido (debe ser 3..6)";
+
+  if (!Array.isArray(strokeIndexes) || strokeIndexes.length !== 18) return "SI debe tener 18 números";
+  const siOk = strokeIndexes.every((s) => Number.isFinite(s) && s >= 1 && s <= 18);
+  if (!siOk) return "SI inválido (debe ser 1..18)";
+  const set = new Set(strokeIndexes);
+  if (set.size !== 18) return "SI inválido: no puede repetir números (1..18 una sola vez)";
+
+  return null;
+}
+
 /* ---------------- main ---------------- */
 
 export default function Session() {
@@ -102,6 +128,18 @@ export default function Session() {
   const [savingHistory, setSavingHistory] = useState(false);
   const [savingEntry, setSavingEntry] = useState(false);
   const [savingBolaRosa, setSavingBolaRosa] = useState(false);
+
+  // ✅ NEW: Remote courses from Firestore
+  const [remoteCourses, setRemoteCourses] = useState({});
+  const [coursesLoading, setCoursesLoading] = useState(true);
+
+  // ✅ NEW: Add Course modal
+  const [openAddCourse, setOpenAddCourse] = useState(false);
+  const [addingCourse, setAddingCourse] = useState(false);
+  const [newCourseName, setNewCourseName] = useState("");
+  const [newCourseRegion, setNewCourseRegion] = useState("");
+  const [newCourseParText, setNewCourseParText] = useState("");
+  const [newCourseSiText, setNewCourseSiText] = useState("");
 
   // UI collapsables
   const [openSession, setOpenSession] = useState(true);
@@ -161,10 +199,56 @@ export default function Session() {
     return () => unsubs.forEach((u) => u && u());
   }, [sessionId, groups]);
 
+  // ✅ NEW: Load approved courses from Firestore (live)
+  useEffect(() => {
+    setCoursesLoading(true);
+    const qy = query(collection(db, "courses"), where("approved", "==", true));
+    const unsub = onSnapshot(
+      qy,
+      (snap) => {
+        const out = {};
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          out[d.id] = {
+            name: data.name || d.id,
+            region: data.region || "",
+            parValues: Array.isArray(data.parValues) ? data.parValues : Array(18).fill(4),
+            strokeIndexes: Array.isArray(data.strokeIndexes)
+              ? data.strokeIndexes
+              : Array.from({ length: 18 }, (_, i) => i + 1),
+            source: data.source || "user",
+          };
+        });
+        setRemoteCourses(out);
+        setCoursesLoading(false);
+      },
+      (err) => {
+        console.error("courses onSnapshot error:", err);
+        setRemoteCourses({});
+        setCoursesLoading(false);
+      }
+    );
+    return () => unsub && unsub();
+  }, []);
+
   const courseId = session?.courseId || "campestre-slp";
   const hcpPercent = session?.hcpPercent ?? 100;
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
+
+  // ✅ NEW: merged courses
+  const ALL_COURSES = useMemo(() => {
+    return { ...COURSE_DATA, ...remoteCourses };
+  }, [remoteCourses]);
+
+  const COURSES = useMemo(() => {
+    return Object.entries(ALL_COURSES)
+      .map(([id, c]) => ({
+        id,
+        label: `${c.name || id}${c.region ? ` (${c.region})` : ""}`,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [ALL_COURSES]);
 
   const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
 
@@ -293,6 +377,61 @@ export default function Session() {
       alert(e?.message || "Error creando grupo");
     } finally {
       setCreatingGroup(false);
+    }
+  };
+
+  // ✅ NEW: Create course in Firestore
+  const createCourse = async () => {
+    if (addingCourse) return;
+    const uid = auth.currentUser?.uid || null;
+    if (!uid) {
+      alert("Necesitas iniciar sesión para agregar campos.");
+      return;
+    }
+
+    const parValues = parse18Numbers(newCourseParText);
+    const strokeIndexes = parse18Numbers(newCourseSiText);
+
+    if (!parValues) {
+      alert("Par inválido: pega 18 números (separados por coma, espacio o salto de línea).");
+      return;
+    }
+    if (!strokeIndexes) {
+      alert("SI inválido: pega 18 números (separados por coma, espacio o salto de línea).");
+      return;
+    }
+
+    const err = validateCoursePayload({ name: newCourseName, parValues, strokeIndexes });
+    if (err) {
+      alert(err);
+      return;
+    }
+
+    setAddingCourse(true);
+    try {
+      await addDoc(collection(db, "courses"), {
+        name: String(newCourseName || "").trim(),
+        region: String(newCourseRegion || "").trim(),
+        parValues,
+        strokeIndexes,
+        approved: true, // si luego quieres moderación, cambia a false
+        source: "user",
+        createdBy: uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      toast("Campo creado ✅");
+      setOpenAddCourse(false);
+      setNewCourseName("");
+      setNewCourseRegion("");
+      setNewCourseParText("");
+      setNewCourseSiText("");
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "No se pudo crear el campo");
+    } finally {
+      setAddingCourse(false);
     }
   };
 
@@ -454,6 +593,75 @@ export default function Session() {
     <div style={page}>
       <style>{baseCss}</style>
 
+      {/* ✅ NEW modal */}
+      {openAddCourse ? (
+        <Modal
+          title="Agregar campo"
+          subtitle="Pega Par y SI (18 valores) · se guarda para todos"
+          onClose={() => setOpenAddCourse(false)}
+        >
+          <div style={grid2}>
+            <div style={field}>
+              <div style={label}>Nombre</div>
+              <input
+                style={{ ...inputDark, width: "100%" }}
+                value={newCourseName}
+                onChange={(e) => setNewCourseName(e.target.value)}
+                placeholder="Ej. La Loma Club de Golf"
+              />
+            </div>
+
+            <div style={field}>
+              <div style={label}>Región</div>
+              <input
+                style={{ ...inputDark, width: "100%" }}
+                value={newCourseRegion}
+                onChange={(e) => setNewCourseRegion(e.target.value)}
+                placeholder="Ej. San Luis Potosí"
+              />
+            </div>
+
+            <div style={field}>
+              <div style={label}>Par (18 números)</div>
+              <textarea
+                style={textareaDark}
+                value={newCourseParText}
+                onChange={(e) => setNewCourseParText(e.target.value)}
+                placeholder="Ej: 4,4,4,3,5,5,4,3,4,4,3,4,4,4,5,4,3,5"
+                rows={4}
+              />
+              <div style={hint}>Puedes separar por coma, espacio o salto de línea.</div>
+            </div>
+
+            <div style={field}>
+              <div style={label}>Stroke Index / Handicap (18 números 1..18)</div>
+              <textarea
+                style={textareaDark}
+                value={newCourseSiText}
+                onChange={(e) => setNewCourseSiText(e.target.value)}
+                placeholder="Ej: 11,3,13,17,7,5,1,15,9,2,18,10,16,4,8,14,12,6"
+                rows={4}
+              />
+              <div style={hint}>No se puede repetir ningún número (1..18 una sola vez).</div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button style={smallBtn} onClick={() => setOpenAddCourse(false)} type="button">
+                Cancelar
+              </button>
+              <button
+                style={smallPrimaryBtn}
+                onClick={createCourse}
+                disabled={addingCourse}
+                type="button"
+              >
+                {addingCourse ? "Guardando…" : "Guardar"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
       {/* App Bar */}
       <div style={appBar}>
         <button onClick={() => navigate("/")} style={iconBtn} aria-label="Home">
@@ -500,13 +708,36 @@ export default function Session() {
 
             <div style={field}>
               <div style={label}>Campo</div>
-              <select value={courseId} onChange={(e) => changeCourse(e.target.value)} style={selectDark} disabled={savingCourse}>
-                {COURSES.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
+
+              {/* ✅ Same look, just added +Campo button */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <select
+                  value={courseId}
+                  onChange={(e) => changeCourse(e.target.value)}
+                  style={selectDark}
+                  disabled={savingCourse || coursesLoading}
+                >
+                  {coursesLoading ? (
+                    <option value={courseId}>Cargando campos…</option>
+                  ) : (
+                    COURSES.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.label}
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => setOpenAddCourse(true)}
+                  style={smallPrimaryBtn}
+                  title="Agregar campo"
+                >
+                  + Campo
+                </button>
+              </div>
+
               {savingCourse ? <div style={hint}>Guardando…</div> : null}
             </div>
 
@@ -548,7 +779,7 @@ export default function Session() {
               {savingEntry ? <div style={hint}>Guardando…</div> : null}
             </div>
 
-            {/* NEW Pool & Premios (no se ve “vacío” / más compacto y bonito) */}
+            {/* NEW Pool & Premios */}
             <div style={{ ...field, gridColumn: "1 / -1" }}>
               <div style={label}>Pool & Premios</div>
 
@@ -686,7 +917,7 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        {/* Leaderboards (NEW) */}
+        {/* Leaderboards */}
         <Collapsible title="Leaderboards" subtitle="General (Stableford / Net)" open={openLeaderboards} setOpen={setOpenLeaderboards}>
           <div style={cardDark}>
             <div style={lbTopRow}>
@@ -870,13 +1101,33 @@ function rankPill(i) {
   };
 }
 
+// ✅ NEW: Modal (same look & feel)
+function Modal({ title, subtitle, onClose, children }) {
+  return (
+    <div style={modalOverlay} onMouseDown={onClose} role="dialog" aria-modal="true">
+      <div style={modalCard} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 1000, color: "white", fontSize: 16, letterSpacing: -0.3 }}>{title}</div>
+            {subtitle ? <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>{subtitle}</div> : null}
+          </div>
+          <button style={iconBtn} onClick={onClose} type="button" aria-label="Cerrar">
+            ✕
+          </button>
+        </div>
+        <div style={{ marginTop: 12 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Styles (premium dark, mobile-first) ---------------- */
 
 const baseCss = `
   * { box-sizing: border-box; }
-  input, button, select { font: inherit; }
+  input, button, select, textarea { font: inherit; }
   button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
-  input:focus, select:focus { outline: none; }
+  input:focus, select:focus, textarea:focus { outline: none; }
   table { border-spacing: 0; }
 `;
 
@@ -1008,6 +1259,18 @@ const inputDark = {
   width: 140,
 };
 
+const textareaDark = {
+  padding: "12px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "rgba(15,23,42,0.55)",
+  color: "white",
+  fontWeight: 900,
+  width: "100%",
+  resize: "vertical",
+  minHeight: 90,
+};
+
 const codePill = {
   padding: "10px 12px",
   borderRadius: 14,
@@ -1037,6 +1300,7 @@ const smallPrimaryBtn = {
   background: "rgba(59,130,246,0.18)",
   color: "#dbeafe",
   fontWeight: 950,
+  whiteSpace: "nowrap",
 };
 
 const cardDark = {
@@ -1324,10 +1588,30 @@ const btn = {
   fontWeight: 900,
 };
 
+/* ✅ NEW modal styles (match look & feel) */
+const modalOverlay = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 200,
+  background: "rgba(0,0,0,0.55)",
+  backdropFilter: "blur(10px)",
+  display: "grid",
+  placeItems: "center",
+  padding: 14,
+};
+
+const modalCard = {
+  width: "min(720px, 96vw)",
+  borderRadius: 18,
+  border: "1px solid rgba(148,163,184,0.14)",
+  background: "linear-gradient(180deg, rgba(15,23,42,0.80) 0%, rgba(2,6,23,0.55) 100%)",
+  boxShadow: "0 24px 70px rgba(0,0,0,0.55)",
+  padding: 12,
+};
+
 /* ---- responsive tweaks ---- */
 if (typeof window !== "undefined") {
   const mq = window.matchMedia?.("(min-width: 860px)");
-  // no-op if not available
   if (mq?.matches) {
     prizesGrid.gridTemplateColumns = "1.1fr 0.9fr";
     h2hPickGrid.gridTemplateColumns = "1fr 1fr";

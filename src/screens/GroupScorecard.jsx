@@ -132,6 +132,10 @@ export default function GroupScorecard() {
   const [editingScores, setEditingScores] = useState({});
   const [screenshotMode, setScreenshotMode] = useState(false);
 
+  // ✅ Offline awareness
+  const [syncPending, setSyncPending] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
+
   // Sticky column behavior (compact when user scrolls horizontally)
   const [stickyCompact, setStickyCompact] = useState(false);
   const tableWrapRef = useRef(null);
@@ -155,69 +159,89 @@ export default function GroupScorecard() {
 
   useEffect(() => {
     if (!sessionRef) return;
-    return onSnapshot(sessionRef, (snap) => setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null));
+    return onSnapshot(
+      sessionRef,
+      { includeMetadataChanges: true },
+      (snap) => setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null)
+    );
   }, [sessionRef]);
 
   useEffect(() => {
     if (!settingsRef) return;
-    return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
+    return onSnapshot(
+      settingsRef,
+      { includeMetadataChanges: true },
+      (snap) => setSettings(snap.exists() ? snap.data() : null)
+    );
   }, [settingsRef]);
 
   useEffect(() => {
     if (!groupRef) return;
-    return onSnapshot(groupRef, (snap) => setGroupMeta(snap.exists() ? snap.data() : null));
+    return onSnapshot(
+      groupRef,
+      { includeMetadataChanges: true },
+      (snap) => setGroupMeta(snap.exists() ? snap.data() : null)
+    );
   }, [groupRef]);
 
   // Listener + auto init + migration defaults
   useEffect(() => {
     if (!stateRef) return;
 
-    const unsub = onSnapshot(stateRef, async (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
+    const unsub = onSnapshot(
+      stateRef,
+      { includeMetadataChanges: true },
+      async (snap) => {
+        // ✅ Offline awareness (main doc where most writes happen)
+        setSyncPending(snap.metadata.hasPendingWrites);
+        setFromCache(snap.metadata.fromCache);
 
-        const gs = data.groupSettings || {};
-        const nextGs = { ...DEFAULT_GROUP_SETTINGS, ...gs };
+        if (snap.exists()) {
+          const data = snap.data();
 
-        const migratedGreens = data.greens || data.greenies || {};
-        const migratedBolaRosa = typeof data.bolaRosa === "string" ? data.bolaRosa : "";
+          const gs = data.groupSettings || {};
+          const nextGs = { ...DEFAULT_GROUP_SETTINGS, ...gs };
 
-        const needsPatch =
-          !data.groupSettings ||
-          !data.greens ||
-          !("bolaRosa" in data) ||
-          nextGs.birdiePay !== gs.birdiePay ||
-          nextGs.eaglePay !== gs.eaglePay ||
-          nextGs.albatrossPay !== gs.albatrossPay ||
-          nextGs.greensPay !== gs.greensPay;
+          const migratedGreens = data.greens || data.greenies || {};
+          const migratedBolaRosa = typeof data.bolaRosa === "string" ? data.bolaRosa : "";
 
-        if (needsPatch) {
-          try {
-            await updateDoc(stateRef, {
-              groupSettings: nextGs,
-              greens: migratedGreens,
-              bolaRosa: migratedBolaRosa,
-              updatedAt: serverTimestamp(),
-            });
-          } catch {}
+          const needsPatch =
+            !data.groupSettings ||
+            !data.greens ||
+            !("bolaRosa" in data) ||
+            nextGs.birdiePay !== gs.birdiePay ||
+            nextGs.eaglePay !== gs.eaglePay ||
+            nextGs.albatrossPay !== gs.albatrossPay ||
+            nextGs.greensPay !== gs.greensPay;
+
+          if (needsPatch) {
+            try {
+              await updateDoc(stateRef, {
+                groupSettings: nextGs,
+                greens: migratedGreens,
+                bolaRosa: migratedBolaRosa,
+                updatedAt: serverTimestamp(),
+              });
+            } catch {}
+          }
+
+          setState({
+            ...data,
+            groupSettings: nextGs,
+            greens: migratedGreens,
+            bolaRosa: migratedBolaRosa,
+          });
+          return;
         }
 
-        setState({
-          ...data,
-          groupSettings: nextGs,
-          greens: migratedGreens,
-          bolaRosa: migratedBolaRosa,
-        });
-        return;
+        try {
+          await setDoc(stateRef, DEFAULT_STATE, { merge: true });
+        } catch (e) {
+          console.error(e);
+          setState(null);
+        }
       }
-
-      try {
-        await setDoc(stateRef, DEFAULT_STATE, { merge: true });
-      } catch (e) {
-        console.error(e);
-        setState(null);
-      }
-    });
+    );
 
     return () => unsub();
   }, [stateRef]);
@@ -314,7 +338,7 @@ export default function GroupScorecard() {
 
     const newDobladas = { ...dobladas };
     Object.keys(newDobladas).forEach((k) => {
-      if (k.split("|").includes(playerId)) delete newDobladas[k];
+      if (k.split("|").includes(playerId)) delete dobladas[k];
     });
 
     const newBolaRosa = bolaRosa === playerId ? "" : bolaRosa;
@@ -474,7 +498,10 @@ export default function GroupScorecard() {
           <div style={{ minWidth: 0 }}>
             <div style={titleRow}>
               <div style={titleText}>{groupMeta?.name || groupId}</div>
+
               {saving ? <div style={savingPill}>Guardando…</div> : null}
+              {!saving && syncPending ? <div style={syncPill}>Sync…</div> : null}
+              {!saving && !syncPending && fromCache ? <div style={offlinePill}>Offline</div> : null}
             </div>
             <div style={subText}>{subtitle}</div>
           </div>
@@ -506,11 +533,7 @@ export default function GroupScorecard() {
             </div>
 
             {/* Score table */}
-            <div
-              ref={tableWrapRef}
-              style={tableWrap}
-              onScroll={onTableScroll}
-            >
+            <div ref={tableWrapRef} style={tableWrap} onScroll={onTableScroll}>
               <table style={table}>
                 <thead>
                   <tr>
@@ -618,8 +641,7 @@ export default function GroupScorecard() {
                         </td>
 
                         {Array.from({ length: 9 }).map((_, h) => {
-                          const shown =
-                            editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : arr[h] ?? "";
+                          const shown = editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : arr[h] ?? "";
                           const cat = scoreCategory(shown, course.parValues[h]);
                           return (
                             <td key={`sf-${p.id}-${h}`} style={td}>
@@ -639,8 +661,7 @@ export default function GroupScorecard() {
 
                         {Array.from({ length: 9 }).map((_, i) => {
                           const h = i + 9;
-                          const shown =
-                            editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : arr[h] ?? "";
+                          const shown = editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : arr[h] ?? "";
                           const cat = scoreCategory(shown, course.parValues[h]);
                           return (
                             <td key={`sb-${p.id}-${h}`} style={td}>
@@ -676,8 +697,6 @@ export default function GroupScorecard() {
                 </tbody>
               </table>
             </div>
-
-            {/* (Removed: flicker legend chips) */}
           </section>
 
           {/* COLLAPSABLES (no estorban el scorecard) */}
@@ -1020,6 +1039,26 @@ const savingPill = {
   border: "1px solid rgba(59,130,246,0.25)",
   background: "rgba(59,130,246,0.12)",
   color: "#bfdbfe",
+};
+
+const syncPill = {
+  fontSize: 11,
+  fontWeight: 900,
+  padding: "6px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(251,146,60,0.28)",
+  background: "rgba(251,146,60,0.12)",
+  color: "#fed7aa",
+};
+
+const offlinePill = {
+  fontSize: 11,
+  fontWeight: 900,
+  padding: "6px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(148,163,184,0.22)",
+  background: "rgba(148,163,184,0.10)",
+  color: "rgba(226,232,240,0.92)",
 };
 
 const iconBtn = {

@@ -9,6 +9,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
+  signInWithPopup,
 } from "firebase/auth";
 import {
   addDoc,
@@ -55,6 +56,14 @@ function addRecent(sessionId) {
 
 /* ---------------- Error helpers ---------------- */
 
+function safeStringify(obj) {
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return String(obj);
+  }
+}
+
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
@@ -65,7 +74,7 @@ function normalizeErr(e) {
     e?.error ||
     e?.localizedDescription ||
     e?.details ||
-    (typeof e === "object" ? JSON.stringify(e) : String(e));
+    (typeof e === "object" ? safeStringify(e) : String(e));
 
   return code ? `${code}: ${msg}` : msg;
 }
@@ -82,6 +91,11 @@ function firebaseNiceMessage(err) {
   if (code.includes("auth/network-request-failed")) return "Sin conexión. Revisa tu internet.";
   if (code.includes("auth/too-many-requests")) return "Demasiados intentos. Espera un poco e intenta de nuevo.";
 
+  // Apple nonce issues típicos
+  if (code.includes("auth/missing-or-invalid-nonce")) {
+    return "Apple: nonce inválido. Borra la app del iPhone y vuelve a intentar. Si sigue: Settings > Apple ID > Apps Using Apple ID > Stop Using Apple ID para esta app.";
+  }
+
   return normalizeErr(err);
 }
 
@@ -91,6 +105,20 @@ function withTimeout(promise, ms, label = "Operación") {
     t = setTimeout(() => rej(new Error(`${label}: timeout (${ms}ms)`)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
+function logAuthError(label, e) {
+  // Esto evita el famoso "{}" en iOS
+  console.error(`[${label}] raw:`, e);
+  console.error(`[${label}] string:`, String(e));
+  console.error(`[${label}] props:`, {
+    name: e?.name,
+    code: e?.code,
+    message: e?.message,
+    localizedDescription: e?.localizedDescription,
+    details: e?.details,
+    stack: e?.stack,
+  });
 }
 
 /* ---------------- Input restrictions ---------------- */
@@ -123,6 +151,53 @@ function isLikelyValidSessionId(id) {
   return true;
 }
 
+/* ---------------- Credential parsers (compat) ---------------- */
+
+function extractGoogleTokens(res) {
+  const c = res?.credential || res?.credentials || res?.authentication || res?.userCredential?.credential || {};
+  const idToken =
+    c?.idToken ||
+    c?.id_token ||
+    c?.oauthIdToken ||
+    c?.oauthIdtoken ||
+    c?.token ||
+    res?.idToken ||
+    res?.id_token ||
+    null;
+
+  const accessToken =
+    c?.accessToken ||
+    c?.access_token ||
+    c?.oauthAccessToken ||
+    res?.accessToken ||
+    res?.access_token ||
+    null;
+
+  return { idToken, accessToken };
+}
+
+function extractAppleTokens(res) {
+  const c = res?.credential || res?.credentials || res?.authentication || {};
+  const idToken =
+    c?.idToken ||
+    c?.identityToken ||
+    c?.id_token ||
+    res?.idToken ||
+    res?.identityToken ||
+    null;
+
+  // Para este plugin, normalmente el raw nonce viene en `nonce`
+  // (como en docs de firebase-js-sdk.md)
+  const rawNonce =
+    c?.nonce ||
+    c?.rawNonce ||
+    res?.nonce ||
+    res?.rawNonce ||
+    null;
+
+  return { idToken, rawNonce };
+}
+
 /* ---------------- Screen ---------------- */
 
 export default function Home() {
@@ -149,6 +224,7 @@ export default function Home() {
   const navigate = useNavigate();
 
   const platform = Capacitor.getPlatform(); // "ios" | "android" | "web"
+  const isNative = Capacitor.isNativePlatform();
   const showApple = platform === "ios";
   const isBusy = loadingGoogle || loadingApple || loadingEmail || creating;
 
@@ -200,30 +276,21 @@ export default function Home() {
 
   const loginGoogle = async () => {
     if (isBusy) return;
+
     setLoadingGoogle(true);
     try {
-      // limpia estados atorados nativos
-      try {
-        await FirebaseAuthentication.signOut();
-      } catch {}
+      // ✅ IMPORTANTÍSIMO:
+      // No hacemos FirebaseAuthentication.signOut() aquí.
+      // Eso fue lo que suele romper iOS dejando "Entrando..." + error {}.
+      if (!isNative) {
+        // Web (browser): popup normal
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(auth, provider);
+        return;
+      }
 
-      const res = await withTimeout(
-        FirebaseAuthentication.signInWithGoogle(),
-        20000,
-        "Google Sign-In"
-      );
-
-      const idToken =
-        res?.credential?.idToken ||
-        res?.credential?.id_token ||
-        res?.credential?.token ||
-        res?.credential?.oauthIdToken ||
-        null;
-
-      const accessToken =
-        res?.credential?.accessToken ||
-        res?.credential?.access_token ||
-        null;
+      const res = await withTimeout(FirebaseAuthentication.signInWithGoogle(), 20000, "Google Sign-In");
+      const { idToken, accessToken } = extractGoogleTokens(res);
 
       if (!idToken && !accessToken) {
         throw new Error("Google regresó respuesta pero no trajo idToken/accessToken.");
@@ -232,7 +299,7 @@ export default function Home() {
       const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
       await signInWithCredential(auth, credential);
     } catch (e) {
-      console.error("loginGoogle error:", e);
+      logAuthError("loginGoogle", e);
       alert(firebaseNiceMessage(e));
     } finally {
       setLoadingGoogle(false);
@@ -247,10 +314,11 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // limpia estados atorados nativos
-      try {
-        await FirebaseAuthentication.signOut();
-      } catch {}
+      if (!isNative) {
+        // En web no hacemos Apple aquí (tu app lo usa nativo iOS)
+        alert("Apple Sign-In solo está habilitado en iOS (nativo).");
+        return;
+      }
 
       const res = await withTimeout(
         FirebaseAuthentication.signInWithApple({ scopes: ["email", "name"] }),
@@ -258,21 +326,13 @@ export default function Home() {
         "Apple Sign-In"
       );
 
-      const idToken =
-        res?.credential?.idToken ||
-        res?.credential?.identityToken ||
-        res?.credential?.id_token ||
-        null;
-
-      const rawNonce =
-        res?.credential?.nonce ||
-        res?.credential?.rawNonce ||
-        null;
+      const { idToken, rawNonce } = extractAppleTokens(res);
 
       if (!idToken) {
-        throw new Error("Apple no regresó idToken. No puedo sincronizar con Firebase Web.");
+        throw new Error("Apple no regresó idToken.");
       }
 
+      // Según docs del plugin: rawNonce = result.credential?.nonce
       const provider = new OAuthProvider("apple.com");
       const cred = provider.credential({
         idToken,
@@ -281,7 +341,8 @@ export default function Home() {
 
       await signInWithCredential(auth, cred);
     } catch (e) {
-      console.error("loginApple error:", e);
+      logAuthError("loginApple", e);
+
       const msg = firebaseNiceMessage(e);
       alert(
         [
@@ -289,9 +350,9 @@ export default function Home() {
           "",
           msg,
           "",
-          "Si se queda atorado con nonce/duplicate:",
+          "Tips si te sale nonce/duplicate:",
           "1) Borra la app del iPhone.",
-          "2) Settings > Apple ID > Sign-In & Security > Apps Using Apple ID > (tu app) > Stop Using Apple ID.",
+          "2) Settings > Apple ID > Sign-In & Security > Apps Using Apple ID > (Apuestas Golf) > Stop Using Apple ID.",
           "3) Reinstala e intenta de nuevo.",
         ].join("\n")
       );
@@ -359,8 +420,9 @@ export default function Home() {
   /* ---------------- Misc ---------------- */
 
   const logout = async () => {
+    // En logout sí limpiamos ambos lados.
     try {
-      await FirebaseAuthentication.signOut();
+      if (isNative) await FirebaseAuthentication.signOut();
     } catch {}
     try {
       await signOut(auth);
@@ -693,7 +755,7 @@ export default function Home() {
                           <button
                             style={btn}
                             onClick={() => {
-                              setJoinId(id);
+                              setRecent(addRecent(id));
                               navigate(`/session/${id}`);
                             }}
                           >

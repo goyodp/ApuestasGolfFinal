@@ -595,11 +595,7 @@ export default function Session() {
 
       {/* ✅ NEW modal */}
       {openAddCourse ? (
-        <Modal
-          title="Agregar campo"
-          subtitle="Pega Par y SI (18 valores) · se guarda para todos"
-          onClose={() => setOpenAddCourse(false)}
-        >
+        <Modal title="Agregar campo" subtitle="Pega Par y SI (18 valores) · se guarda para todos" onClose={() => setOpenAddCourse(false)}>
           <div style={grid2}>
             <div style={field}>
               <div style={label}>Nombre</div>
@@ -649,12 +645,7 @@ export default function Session() {
               <button style={smallBtn} onClick={() => setOpenAddCourse(false)} type="button">
                 Cancelar
               </button>
-              <button
-                style={smallPrimaryBtn}
-                onClick={createCourse}
-                disabled={addingCourse}
-                type="button"
-              >
+              <button style={smallPrimaryBtn} onClick={createCourse} disabled={addingCourse} type="button">
                 {addingCourse ? "Guardando…" : "Guardar"}
               </button>
             </div>
@@ -689,9 +680,7 @@ export default function Session() {
         {/* Session Settings */}
         <Collapsible
           title="Configuración"
-          subtitle={`Status ${session.status || "live"} · Entry ${fmtMoney(entryFee)} · Bola Rosa ${
-            bolaRosaEnabled ? "On" : "Off"
-          }`}
+          subtitle={`Status ${session.status || "live"} · Entry ${fmtMoney(entryFee)} · Bola Rosa ${bolaRosaEnabled ? "On" : "Off"}`}
           open={openSession}
           setOpen={setOpenSession}
         >
@@ -700,7 +689,7 @@ export default function Session() {
               <div style={label}>Session ID</div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <code style={codePill}>{sessionId}</code>
-                <button onClick={copySessionId} style={smallBtn}>
+                <button onClick={copySessionId} style={smallBtn} type="button">
                   Copiar
                 </button>
               </div>
@@ -728,12 +717,7 @@ export default function Session() {
                   )}
                 </select>
 
-                <button
-                  type="button"
-                  onClick={() => setOpenAddCourse(true)}
-                  style={smallPrimaryBtn}
-                  title="Agregar campo"
-                >
+                <button type="button" onClick={() => setOpenAddCourse(true)} style={smallPrimaryBtn} title="Agregar campo">
                   + Campo
                 </button>
               </div>
@@ -749,9 +733,7 @@ export default function Session() {
                 onChange={(e) => setHcpDraft(sanitizeIntInput(e.target.value, { allowNegative: false }))}
                 onBlur={() => commitHcpPercent(hcpDraft)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.currentTarget.blur();
-                  }
+                  if (e.key === "Enter") e.currentTarget.blur();
                 }}
                 style={inputDark}
                 inputMode="numeric"
@@ -768,9 +750,7 @@ export default function Session() {
                 onChange={(e) => setEntryDraft(sanitizeIntInput(e.target.value, { allowNegative: false }))}
                 onBlur={() => commitEntryFee(entryDraft)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.currentTarget.blur();
-                  }
+                  if (e.key === "Enter") e.currentTarget.blur();
                 }}
                 style={inputDark}
                 inputMode="numeric"
@@ -856,12 +836,7 @@ export default function Session() {
         </Collapsible>
 
         {/* H2H */}
-        <Collapsible
-          title="Head-to-Head (cross-group)"
-          subtitle="Cualquier jugador vs cualquier jugador · F9/B9/Total"
-          open={openH2H}
-          setOpen={setOpenH2H}
-        >
+        <Collapsible title="Head-to-Head (cross-group)" subtitle="Cualquier jugador vs cualquier jugador · F9/B9/Total" open={openH2H} setOpen={setOpenH2H}>
           <div style={cardDark}>
             <div style={h2hPickGrid}>
               <div>
@@ -959,9 +934,7 @@ export default function Session() {
                   {(lbTab === "stb" ? stbToShow : netToShow).map((r, i) => (
                     <tr key={`${r.playerKey}-${i}`} style={lbTr}>
                       <td style={lbTdRank}>
-                        <span style={rankPill(i)}>
-                          {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}
-                        </span>
+                        <span style={rankPill(i)}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</span>
                       </td>
                       <td style={lbTdLeft}>
                         <div style={nameCell}>
@@ -970,7 +943,11 @@ export default function Session() {
                       </td>
                       <td style={lbTd}>{r.hcp}</td>
                       <td style={lbTdVal}>
-                        {lbTab === "stb" ? <b style={{ color: "white" }}>{r.stableford}</b> : <b style={{ color: "white" }}>{r.net}</b>}
+                        {lbTab === "stb" ? (
+                          <b style={{ color: "white" }}>{r.stableford}</b>
+                        ) : (
+                          <b style={{ color: "white" }}>{r.net}</b>
+                        )}
                       </td>
                       <td style={lbTdRight}>
                         <span style={groupPill}>G{String(r.groupId || "").replace("group-", "") || "-"}</span>
@@ -986,8 +963,7 @@ export default function Session() {
                 {lbShowAll ? "Ver menos" : "Ver todos"}
               </button>
               <div style={{ opacity: 0.7, fontSize: 12 }}>
-                Mostrando {lbTab === "stb" ? stbToShow.length : netToShow.length} de{" "}
-                {lbTab === "stb" ? stablefordRows.length : netRows.length}
+                Mostrando {lbTab === "stb" ? stbToShow.length : netToShow.length} de {lbTab === "stb" ? stablefordRows.length : netRows.length}
               </div>
             </div>
           </div>
@@ -1000,7 +976,7 @@ export default function Session() {
           open={openGroups}
           setOpen={setOpenGroups}
           right={
-            <button onClick={addGroup} disabled={creatingGroup} style={smallPrimaryBtn}>
+            <button onClick={addGroup} disabled={creatingGroup} style={smallPrimaryBtn} type="button">
               {creatingGroup ? "Creando…" : "+ Grupo"}
             </button>
           }
@@ -1054,7 +1030,16 @@ function GroupCard({ group, state, onOpen }) {
     <button style={groupCardBtn} onClick={onOpen} type="button">
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 1000, fontSize: 16, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div
+            style={{
+              fontWeight: 1000,
+              fontSize: 16,
+              color: "white",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
             {group.name || group.id}
           </div>
           <div style={{ marginTop: 6, opacity: 0.78, fontSize: 12 }}>
@@ -1486,7 +1471,13 @@ const lbTdVal = { ...lbTdBase, textAlign: "center" };
 const lbTdRight = { ...lbTdBase, textAlign: "right" };
 
 const nameCell = { display: "flex", alignItems: "center", gap: 8, minWidth: 0 };
-const nameMain = { fontWeight: 950, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const nameMain = {
+  fontWeight: 950,
+  color: "white",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
 
 const groupPill = {
   display: "inline-flex",

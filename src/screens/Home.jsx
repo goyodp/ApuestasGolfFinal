@@ -91,24 +91,38 @@ function randomNonce(length = 32) {
   const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._";
   let result = "";
   const values = new Uint8Array(length);
-  // crypto exists in modern iOS WKWebView; fallback to Math.random if needed
+
   if (globalThis.crypto?.getRandomValues) {
     globalThis.crypto.getRandomValues(values);
     for (let i = 0; i < length; i++) result += charset[values[i] % charset.length];
     return result;
   }
+
   for (let i = 0; i < length; i++) result += charset[Math.floor(Math.random() * charset.length)];
   return result;
 }
 
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
 async function sha256base64url(input) {
-  // If crypto.subtle missing (very old), return null and fallback
   if (!globalThis.crypto?.subtle?.digest) return null;
   const data = new TextEncoder().encode(input);
   const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const base64 = btoa(String.fromCharCode.apply(null, hashArray));
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return bytesToBase64Url(new Uint8Array(hashBuffer));
+}
+
+async function waitForUser(ms = 2000) {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (auth.currentUser) return auth.currentUser;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
 }
 
 /* ---------------- Screen ---------------- */
@@ -179,7 +193,7 @@ export default function Home() {
     }
   };
 
-  /* ---------------- Auth: Apple (nonce-correct) ---------------- */
+  /* ---------------- Auth: Apple (nonce-correct + no double-signin) ---------------- */
 
   const loginApple = async () => {
     if (platform !== "ios") return;
@@ -187,18 +201,22 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // Always generate a NEW nonce per attempt
+      // NEW nonce per attempt
       const rawNonce = randomNonce(32);
       const hashedNonce = await sha256base64url(rawNonce);
 
-      // Ask Apple login. Many versions accept "nonce" (hashed).
-      // If hashedNonce is null, we still try without it (fallback).
+      // 1) Native Apple login via plugin. Prefer sending hashed nonce.
       const res = await FirebaseAuthentication.signInWithApple({
         ...(hashedNonce ? { nonce: hashedNonce } : {}),
         scopes: ["email", "name"],
       });
 
-      // Try to get idToken
+      // 2) Many plugin versions already sign in to Firebase internally.
+      // Wait briefly for auth.currentUser to appear; if it does, we're done.
+      const u = await waitForUser(2000);
+      if (u) return;
+
+      // 3) Fallback manual signInWithCredential ONLY if user didn't appear
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.identityToken ||
@@ -207,29 +225,18 @@ export default function Home() {
         res?.credential?.token ||
         null;
 
-      // Some versions may return the nonce/rawNonce too (we prefer our rawNonce)
-      const pluginRawNonce = res?.credential?.nonce || res?.credential?.rawNonce || null;
-
       if (!idToken) {
         throw new Error("Apple login no regresó idToken/identityToken.");
       }
 
       const provider = new OAuthProvider("apple.com");
-
-      // Prefer using our rawNonce (best practice). If crypto.subtle missing and we couldn't send nonce,
-      // fallback to plugin-provided rawNonce; if none, omit (may fail depending on Firebase settings).
-      const finalRawNonce = rawNonce || pluginRawNonce || undefined;
-
       const credential = provider.credential({
         idToken,
-        rawNonce: finalRawNonce,
+        rawNonce, // raw nonce that matches hashedNonce
       });
 
       await signInWithCredential(auth, credential);
     } catch (e) {
-      // If you still see AUTH/MISSING-OR-INVALID-NONCE here:
-      // - delete app from device + reinstall
-      // - ensure Apple provider enabled in Firebase Auth
       alert(normalizeErr(e));
     } finally {
       setLoadingApple(false);
@@ -253,7 +260,6 @@ export default function Home() {
       } else {
         await createUserWithEmailAndPassword(auth, email.trim(), pass);
       }
-      // onAuthStateChanged se encarga del resto
     } catch (e) {
       alert(normalizeErr(e));
     } finally {
@@ -444,8 +450,19 @@ export default function Home() {
                     type="password"
                   />
 
-                  <button onClick={loginEmail} disabled={isBusy || (emailMode !== "login" ? !canSubmitEmail : !isEmailValid(email))} style={btnPrimary}>
-                    {loadingEmail ? "Procesando..." : emailMode === "login" ? "Entrar con Email" : "Crear cuenta con Email"}
+                  <button
+                    onClick={loginEmail}
+                    disabled={
+                      isBusy ||
+                      (emailMode !== "login" ? !canSubmitEmail : !isEmailValid(email))
+                    }
+                    style={btnPrimary}
+                  >
+                    {loadingEmail
+                      ? "Procesando..."
+                      : emailMode === "login"
+                      ? "Entrar con Email"
+                      : "Crear cuenta con Email"}
                   </button>
 
                   <div style={{ opacity: 0.7, fontSize: 12, lineHeight: 1.35 }}>
@@ -552,7 +569,11 @@ export default function Home() {
                             Abrir
                           </button>
 
-                          <button style={btnDanger} onClick={() => removeRecent(id)} aria-label="Quitar de recientes">
+                          <button
+                            style={btnDanger}
+                            onClick={() => removeRecent(id)}
+                            aria-label="Quitar de recientes"
+                          >
                             ✕
                           </button>
                         </div>
@@ -575,7 +596,9 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>Aquí aparecerán tus sesiones recientes.</div>
+                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>
+                  Aquí aparecerán tus sesiones recientes.
+                </div>
               )}
             </div>
           </div>

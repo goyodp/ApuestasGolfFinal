@@ -91,7 +91,6 @@ function firebaseNiceMessage(err) {
   if (code.includes("auth/network-request-failed")) return "Sin conexión. Revisa tu internet.";
   if (code.includes("auth/too-many-requests")) return "Demasiados intentos. Espera un poco e intenta de nuevo.";
 
-  // Apple nonce issues típicos
   if (code.includes("auth/missing-or-invalid-nonce")) {
     return "Apple: nonce inválido. Borra la app del iPhone y vuelve a intentar. Si sigue: Settings > Apple ID > Apps Using Apple ID > Stop Using Apple ID para esta app.";
   }
@@ -108,7 +107,6 @@ function withTimeout(promise, ms, label = "Operación") {
 }
 
 function logAuthError(label, e) {
-  // Esto evita el famoso "{}" en iOS
   console.error(`[${label}] raw:`, e);
   console.error(`[${label}] string:`, String(e));
   console.error(`[${label}] props:`, {
@@ -186,14 +184,7 @@ function extractAppleTokens(res) {
     res?.identityToken ||
     null;
 
-  // Para este plugin, normalmente el raw nonce viene en `nonce`
-  // (como en docs de firebase-js-sdk.md)
-  const rawNonce =
-    c?.nonce ||
-    c?.rawNonce ||
-    res?.nonce ||
-    res?.rawNonce ||
-    null;
+  const rawNonce = c?.nonce || c?.rawNonce || res?.nonce || res?.rawNonce || null;
 
   return { idToken, rawNonce };
 }
@@ -276,20 +267,20 @@ export default function Home() {
 
   const loginGoogle = async () => {
     if (isBusy) return;
-
     setLoadingGoogle(true);
     try {
-      // ✅ IMPORTANTÍSIMO:
-      // No hacemos FirebaseAuthentication.signOut() aquí.
-      // Eso fue lo que suele romper iOS dejando "Entrando..." + error {}.
       if (!isNative) {
-        // Web (browser): popup normal
         const provider = new GoogleAuthProvider();
         await signInWithPopup(auth, provider);
         return;
       }
 
-      const res = await withTimeout(FirebaseAuthentication.signInWithGoogle(), 20000, "Google Sign-In");
+      // Ayuda a evitar “silent hangs” en algunos iOS
+      try {
+        await FirebaseAuthentication.useAppLanguage();
+      } catch {}
+
+      const res = await withTimeout(FirebaseAuthentication.signInWithGoogle(), 45000, "Google Sign-In");
       const { idToken, accessToken } = extractGoogleTokens(res);
 
       if (!idToken && !accessToken) {
@@ -309,30 +300,30 @@ export default function Home() {
   /* ---------------- Auth: Apple ---------------- */
 
   const loginApple = async () => {
-    if (platform !== "ios") return;
+    if (!showApple) return;
     if (isBusy) return;
 
     setLoadingApple(true);
     try {
       if (!isNative) {
-        // En web no hacemos Apple aquí (tu app lo usa nativo iOS)
         alert("Apple Sign-In solo está habilitado en iOS (nativo).");
         return;
       }
 
+      try {
+        await FirebaseAuthentication.useAppLanguage();
+      } catch {}
+
       const res = await withTimeout(
         FirebaseAuthentication.signInWithApple({ scopes: ["email", "name"] }),
-        20000,
+        45000,
         "Apple Sign-In"
       );
 
       const { idToken, rawNonce } = extractAppleTokens(res);
 
-      if (!idToken) {
-        throw new Error("Apple no regresó idToken.");
-      }
+      if (!idToken) throw new Error("Apple no regresó idToken.");
 
-      // Según docs del plugin: rawNonce = result.credential?.nonce
       const provider = new OAuthProvider("apple.com");
       const cred = provider.credential({
         idToken,
@@ -342,13 +333,11 @@ export default function Home() {
       await signInWithCredential(auth, cred);
     } catch (e) {
       logAuthError("loginApple", e);
-
-      const msg = firebaseNiceMessage(e);
       alert(
         [
           "No se pudo iniciar sesión con Apple.",
           "",
-          msg,
+          firebaseNiceMessage(e),
           "",
           "Tips si te sale nonce/duplicate:",
           "1) Borra la app del iPhone.",
@@ -420,7 +409,6 @@ export default function Home() {
   /* ---------------- Misc ---------------- */
 
   const logout = async () => {
-    // En logout sí limpiamos ambos lados.
     try {
       if (isNative) await FirebaseAuthentication.signOut();
     } catch {}
@@ -626,6 +614,7 @@ export default function Home() {
           </div>
         ) : (
           <div style={grid2}>
+            {/* (el resto de tu UI igual, lo dejo tal cual para no romper nada) */}
             <div style={card}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 {user.photoURL ? (

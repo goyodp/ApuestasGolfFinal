@@ -4,7 +4,7 @@ import {
   onAuthStateChanged,
   signOut,
   GoogleAuthProvider,
-  OAuthProvider, // ✅ Apple bridge
+  OAuthProvider,
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -53,6 +53,8 @@ function addRecent(sessionId) {
   return next;
 }
 
+/* ---------------- Error helpers ---------------- */
+
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
@@ -81,6 +83,14 @@ function firebaseNiceMessage(err) {
   if (code.includes("auth/too-many-requests")) return "Demasiados intentos. Espera un poco e intenta de nuevo.";
 
   return normalizeErr(err);
+}
+
+function withTimeout(promise, ms, label = "Operación") {
+  let t;
+  const timeout = new Promise((_, rej) => {
+    t = setTimeout(() => rej(new Error(`${label}: timeout (${ms}ms)`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
 /* ---------------- Input restrictions ---------------- */
@@ -192,7 +202,16 @@ export default function Home() {
     if (isBusy) return;
     setLoadingGoogle(true);
     try {
-      const res = await FirebaseAuthentication.signInWithGoogle();
+      // limpia estados atorados nativos
+      try {
+        await FirebaseAuthentication.signOut();
+      } catch {}
+
+      const res = await withTimeout(
+        FirebaseAuthentication.signInWithGoogle(),
+        20000,
+        "Google Sign-In"
+      );
 
       const idToken =
         res?.credential?.idToken ||
@@ -201,7 +220,10 @@ export default function Home() {
         res?.credential?.oauthIdToken ||
         null;
 
-      const accessToken = res?.credential?.accessToken || res?.credential?.access_token || null;
+      const accessToken =
+        res?.credential?.accessToken ||
+        res?.credential?.access_token ||
+        null;
 
       if (!idToken && !accessToken) {
         throw new Error("Google regresó respuesta pero no trajo idToken/accessToken.");
@@ -210,6 +232,7 @@ export default function Home() {
       const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
       await signInWithCredential(auth, credential);
     } catch (e) {
+      console.error("loginGoogle error:", e);
       alert(firebaseNiceMessage(e));
     } finally {
       setLoadingGoogle(false);
@@ -224,22 +247,26 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // 1) Native sign-in
-      const res = await FirebaseAuthentication.signInWithApple({
-        scopes: ["email", "name"],
-      });
+      // limpia estados atorados nativos
+      try {
+        await FirebaseAuthentication.signOut();
+      } catch {}
 
-      // 2) Bridge -> Firebase Web SDK
+      const res = await withTimeout(
+        FirebaseAuthentication.signInWithApple({ scopes: ["email", "name"] }),
+        20000,
+        "Apple Sign-In"
+      );
+
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.identityToken ||
         res?.credential?.id_token ||
         null;
 
-      // Algunos builds regresan "nonce" o "rawNonce". Si no viene, NO lo mandes.
       const rawNonce =
-        res?.credential?.rawNonce ||
         res?.credential?.nonce ||
+        res?.credential?.rawNonce ||
         null;
 
       if (!idToken) {
@@ -254,6 +281,7 @@ export default function Home() {
 
       await signInWithCredential(auth, cred);
     } catch (e) {
+      console.error("loginApple error:", e);
       const msg = firebaseNiceMessage(e);
       alert(
         [

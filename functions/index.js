@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
 
 admin.initializeApp();
@@ -17,29 +18,50 @@ function sanitizeSessionId(raw) {
 }
 
 exports.joinSession = onCall(async (request) => {
-  const uid = request.auth?.uid;
-  if (!uid) {
-    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  try {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    }
+
+    const sessionId = sanitizeSessionId(request.data?.sessionId);
+    if (!sessionId || sessionId.length < 6 || sessionId.length > 60) {
+      throw new HttpsError("invalid-argument", "Session ID inválido.");
+    }
+
+    const db = admin.firestore();
+    const ref = db.doc(`sessions/${sessionId}`);
+    const snap = await ref.get();
+
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "La sesión no existe.");
+    }
+
+    await ref.set(
+      {
+        [`members.${uid}`]: true,
+        memberUids: admin.firestore.FieldValue.arrayUnion(uid),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return { ok: true, sessionId };
+  } catch (err) {
+    logger.error("joinSession failed", {
+      message: err?.message,
+      code: err?.code,
+      details: err?.details,
+      stack: err?.stack,
+    });
+
+    if (err instanceof HttpsError) {
+      throw err;
+    }
+
+    throw new HttpsError(
+      "internal",
+      err?.message || "Error interno al unirse a la sesión."
+    );
   }
-
-  const sessionId = sanitizeSessionId(request.data?.sessionId);
-  if (!sessionId || sessionId.length < 6 || sessionId.length > 60) {
-    throw new HttpsError("invalid-argument", "Session ID inválido.");
-  }
-
-  const ref = admin.firestore().doc(`sessions/${sessionId}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "La sesión no existe.");
-  }
-
-  const updates = {
-    [`members.${uid}`]: true,
-    memberUids: admin.firestore.FieldValue.arrayUnion(uid),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
-
-  await ref.set(updates, { merge: true });
-
-  return { ok: true, sessionId };
 });

@@ -4,7 +4,7 @@ import {
   onAuthStateChanged,
   signOut,
   GoogleAuthProvider,
-  OAuthProvider, // ✅ needed for Apple bridge
+  OAuthProvider, // ✅ Apple bridge
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -52,8 +52,6 @@ function addRecent(sessionId) {
   saveRecent(next);
   return next;
 }
-
-/* ---------------- Errors ---------------- */
 
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
@@ -115,15 +113,6 @@ function isLikelyValidSessionId(id) {
   return true;
 }
 
-/* ---------------- Apple nonce helper ---------------- */
-
-function randomNonce(len = 32) {
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let out = "";
-  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
-
 /* ---------------- Screen ---------------- */
 
 export default function Home() {
@@ -137,14 +126,11 @@ export default function Home() {
   const [joinId, setJoinId] = useState("");
   const [recent, setRecent] = useState(() => loadRecent());
 
-  // session name (optional)
   const [newSessionName, setNewSessionName] = useState("");
 
-  // My sessions list
   const [mySessions, setMySessions] = useState([]);
   const [loadingMySessions, setLoadingMySessions] = useState(false);
 
-  // Email UI
   const [showEmail, setShowEmail] = useState(false);
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -161,7 +147,6 @@ export default function Home() {
     return () => unsub();
   }, []);
 
-  // live list of sessions user belongs to
   useEffect(() => {
     if (!user?.uid) {
       setMySessions([]);
@@ -239,27 +224,23 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // ✅ CRITICAL: generate nonce and pass it to native sign-in
-      const nonce = randomNonce(32);
-
+      // 1) Native sign-in
       const res = await FirebaseAuthentication.signInWithApple({
         scopes: ["email", "name"],
-        // 👇 this is what avoids missing/invalid nonce + duplicate credential loops
-        nonce,     // hashed internally by the plugin / ASAuthorization
-        rawNonce: nonce,
       });
 
+      // 2) Bridge -> Firebase Web SDK
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.identityToken ||
         res?.credential?.id_token ||
         null;
 
-      // Some builds return nonce back; we prefer our own nonce
+      // Algunos builds regresan "nonce" o "rawNonce". Si no viene, NO lo mandes.
       const rawNonce =
         res?.credential?.rawNonce ||
         res?.credential?.nonce ||
-        nonce;
+        null;
 
       if (!idToken) {
         throw new Error("Apple no regresó idToken. No puedo sincronizar con Firebase Web.");
@@ -268,7 +249,7 @@ export default function Home() {
       const provider = new OAuthProvider("apple.com");
       const cred = provider.credential({
         idToken,
-        rawNonce,
+        rawNonce: rawNonce || undefined,
       });
 
       await signInWithCredential(auth, cred);
@@ -409,7 +390,6 @@ export default function Home() {
     }
   };
 
-  // secure join using Cloud Function
   const joinSession = async () => {
     if (!user?.uid) return alert("Inicia sesión para unirte.");
 
@@ -556,7 +536,6 @@ export default function Home() {
           </div>
         ) : (
           <div style={grid2}>
-            {/* Profile + Create */}
             <div style={card}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 {user.photoURL ? (
@@ -597,7 +576,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Join + My sessions + Recents */}
             <div style={card}>
               <div style={cardTitle}>Entrar a una sesión</div>
               <div style={{ opacity: 0.82, marginTop: 6 }}>
@@ -640,7 +618,6 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* My Sessions */}
               <div style={{ marginTop: 18 }}>
                 <div style={{ fontWeight: 950, marginBottom: 8 }}>Mis sesiones</div>
 
@@ -673,7 +650,6 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Recents */}
               {recent.length > 0 ? (
                 <div style={{ marginTop: 18 }}>
                   <div style={{ fontWeight: 950, marginBottom: 8 }}>Recientes</div>

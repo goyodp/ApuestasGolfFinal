@@ -6,6 +6,9 @@ import {
   GoogleAuthProvider,
   OAuthProvider,
   signInWithCredential,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
 } from "firebase/auth";
 import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
 import { auth } from "../firebase/auth";
@@ -42,13 +45,18 @@ function addRecent(sessionId) {
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
-  return e?.message || e?.error || e?.localizedDescription || JSON.stringify(e);
+  const msg =
+    e?.message ||
+    e?.error ||
+    e?.localizedDescription ||
+    e?.details ||
+    (typeof e === "object" ? JSON.stringify(e) : String(e));
+  return msg;
 }
 
 /* ---------------- Input restrictions ---------------- */
 
-// Session IDs are Firestore doc IDs: letters/numbers + some symbols.
-// We'll keep it user-friendly: allow [A-Za-z0-9_-] only, max 60.
+// Session IDs are Firestore doc IDs: allow [A-Za-z0-9_-] only, max 60.
 function sanitizeSessionId(raw) {
   const s = String(raw ?? "");
   let out = "";
@@ -67,7 +75,6 @@ function isLikelyValidSessionId(id) {
   if (!s) return false;
   if (s.length < 6) return false;
   if (s.length > 60) return false;
-  // Must be only allowed chars
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
     const isAz = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z");
@@ -78,22 +85,56 @@ function isLikelyValidSessionId(id) {
   return true;
 }
 
+/* ---------------- Nonce helpers for Apple ---------------- */
+
+function randomNonce(length = 32) {
+  const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._";
+  let result = "";
+  const values = new Uint8Array(length);
+  // crypto exists in modern iOS WKWebView; fallback to Math.random if needed
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(values);
+    for (let i = 0; i < length; i++) result += charset[values[i] % charset.length];
+    return result;
+  }
+  for (let i = 0; i < length; i++) result += charset[Math.floor(Math.random() * charset.length)];
+  return result;
+}
+
+async function sha256base64url(input) {
+  // If crypto.subtle missing (very old), return null and fallback
+  if (!globalThis.crypto?.subtle?.digest) return null;
+  const data = new TextEncoder().encode(input);
+  const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const base64 = btoa(String.fromCharCode.apply(null, hashArray));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 /* ---------------- Screen ---------------- */
 
 export default function Home() {
   const [user, setUser] = useState(null);
+
   const [creating, setCreating] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingApple, setLoadingApple] = useState(false);
+  const [loadingEmail, setLoadingEmail] = useState(false);
 
   const [joinId, setJoinId] = useState("");
   const [recent, setRecent] = useState(() => loadRecent());
 
+  // Email UI
+  const [showEmail, setShowEmail] = useState(false);
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [emailMode, setEmailMode] = useState("login"); // "login" | "signup"
+
   const navigate = useNavigate();
-  const isBusy = loadingGoogle || loadingApple;
 
   const platform = Capacitor.getPlatform(); // "ios" | "android" | "web"
   const showApple = platform === "ios";
+  const isBusy = loadingGoogle || loadingApple || loadingEmail || creating;
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
@@ -108,10 +149,11 @@ export default function Home() {
     return { type: "ok", msg: "Listo para entrar." };
   }, [joinId]);
 
+  /* ---------------- Auth: Google ---------------- */
+
   const loginGoogle = async () => {
     if (isBusy) return;
     setLoadingGoogle(true);
-
     try {
       const res = await FirebaseAuthentication.signInWithGoogle();
 
@@ -122,10 +164,7 @@ export default function Home() {
         res?.credential?.oauthIdToken ||
         null;
 
-      const accessToken =
-        res?.credential?.accessToken ||
-        res?.credential?.access_token ||
-        null;
+      const accessToken = res?.credential?.accessToken || res?.credential?.access_token || null;
 
       if (!idToken && !accessToken) {
         throw new Error("Google regresó respuesta pero no trajo idToken/accessToken.");
@@ -140,47 +179,99 @@ export default function Home() {
     }
   };
 
+  /* ---------------- Auth: Apple (nonce-correct) ---------------- */
+
   const loginApple = async () => {
-    if (Capacitor.getPlatform() !== "ios") return;
+    if (platform !== "ios") return;
     if (isBusy) return;
 
     setLoadingApple(true);
-
     try {
-      // 1) Login nativo
-      const res = await FirebaseAuthentication.signInWithApple();
+      // Always generate a NEW nonce per attempt
+      const rawNonce = randomNonce(32);
+      const hashedNonce = await sha256base64url(rawNonce);
 
-      // 2) Extraer tokens (varía por versión)
+      // Ask Apple login. Many versions accept "nonce" (hashed).
+      // If hashedNonce is null, we still try without it (fallback).
+      const res = await FirebaseAuthentication.signInWithApple({
+        ...(hashedNonce ? { nonce: hashedNonce } : {}),
+        scopes: ["email", "name"],
+      });
+
+      // Try to get idToken
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.identityToken ||
         res?.credential?.id_token ||
+        res?.credential?.identity_token ||
+        res?.credential?.token ||
         null;
 
-      const rawNonce =
-        res?.credential?.nonce ||
-        res?.credential?.rawNonce ||
-        null;
+      // Some versions may return the nonce/rawNonce too (we prefer our rawNonce)
+      const pluginRawNonce = res?.credential?.nonce || res?.credential?.rawNonce || null;
 
       if (!idToken) {
-        throw new Error("Apple login no regresó idToken (identityToken).");
+        throw new Error("Apple login no regresó idToken/identityToken.");
       }
 
-      // 3) Convertir a Firebase Auth credential
       const provider = new OAuthProvider("apple.com");
+
+      // Prefer using our rawNonce (best practice). If crypto.subtle missing and we couldn't send nonce,
+      // fallback to plugin-provided rawNonce; if none, omit (may fail depending on Firebase settings).
+      const finalRawNonce = rawNonce || pluginRawNonce || undefined;
+
       const credential = provider.credential({
         idToken,
-        rawNonce: rawNonce || undefined,
+        rawNonce: finalRawNonce,
       });
 
-      // 4) Iniciar sesión en Firebase Auth (esto dispara onAuthStateChanged)
       await signInWithCredential(auth, credential);
     } catch (e) {
+      // If you still see AUTH/MISSING-OR-INVALID-NONCE here:
+      // - delete app from device + reinstall
+      // - ensure Apple provider enabled in Firebase Auth
       alert(normalizeErr(e));
     } finally {
       setLoadingApple(false);
     }
   };
+
+  /* ---------------- Auth: Email/Password ---------------- */
+
+  const isEmailValid = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
+  const canSubmitEmail = isEmailValid(email) && String(pass || "").length >= 6;
+
+  const loginEmail = async () => {
+    if (isBusy) return;
+    if (!isEmailValid(email)) return alert("Pon un email válido.");
+    if (emailMode !== "login" && String(pass || "").length < 6) return alert("Password mínimo 6 caracteres.");
+
+    setLoadingEmail(true);
+    try {
+      if (emailMode === "login") {
+        await signInWithEmailAndPassword(auth, email.trim(), pass);
+      } else {
+        await createUserWithEmailAndPassword(auth, email.trim(), pass);
+      }
+      // onAuthStateChanged se encarga del resto
+    } catch (e) {
+      alert(normalizeErr(e));
+    } finally {
+      setLoadingEmail(false);
+    }
+  };
+
+  const resetPassword = async () => {
+    if (!isEmailValid(email)) return alert("Pon tu email para mandarte el reset.");
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      alert("Listo. Te mandé un correo para resetear tu contraseña.");
+    } catch (e) {
+      alert(normalizeErr(e));
+    }
+  };
+
+  /* ---------------- Misc ---------------- */
 
   const logout = async () => {
     try {
@@ -194,6 +285,8 @@ export default function Home() {
 
   const createSession = async () => {
     if (!user) return;
+    if (isBusy) return;
+
     setCreating(true);
     try {
       const sessionRef = await addDoc(collection(db, "sessions"), {
@@ -242,11 +335,14 @@ export default function Home() {
   };
 
   const pasteFromClipboard = async () => {
+    // On iOS WKWebView clipboard read often fails. Provide fallback.
     try {
       const t = await navigator.clipboard.readText();
-      if (t) setJoinId(sanitizeSessionId(t.trim()));
+      if (t) return setJoinId(sanitizeSessionId(t.trim()));
+      throw new Error("Clipboard vacío.");
     } catch {
-      alert("No pude leer el clipboard. Pega manual.");
+      const manual = window.prompt("Pega aquí tu Session ID:");
+      if (manual) setJoinId(sanitizeSessionId(String(manual).trim()));
     }
   };
 
@@ -293,6 +389,70 @@ export default function Home() {
                   <span>{loadingApple ? "Entrando..." : "Continuar con Apple"}</span>
                 </button>
               ) : null}
+
+              {/* Email toggle */}
+              <button
+                onClick={() => setShowEmail((v) => !v)}
+                disabled={isBusy}
+                style={{ ...btnGhost, display: "flex", justifyContent: "center" }}
+              >
+                {showEmail ? "Ocultar Email" : "Ingresar con Email"}
+              </button>
+
+              {showEmail ? (
+                <div style={{ marginTop: 2, display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      style={emailMode === "login" ? btnPrimary : btn}
+                      onClick={() => setEmailMode("login")}
+                      disabled={isBusy}
+                    >
+                      Entrar
+                    </button>
+                    <button
+                      type="button"
+                      style={emailMode === "signup" ? btnPrimary : btn}
+                      onClick={() => setEmailMode("signup")}
+                      disabled={isBusy}
+                    >
+                      Crear cuenta
+                    </button>
+                    <button type="button" style={btn} onClick={resetPassword} disabled={isBusy}>
+                      Reset password
+                    </button>
+                  </div>
+
+                  <input
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Email"
+                    style={input}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    inputMode="email"
+                  />
+                  <input
+                    value={pass}
+                    onChange={(e) => setPass(e.target.value)}
+                    placeholder="Password (mín 6)"
+                    style={input}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    type="password"
+                  />
+
+                  <button onClick={loginEmail} disabled={isBusy || (emailMode !== "login" ? !canSubmitEmail : !isEmailValid(email))} style={btnPrimary}>
+                    {loadingEmail ? "Procesando..." : emailMode === "login" ? "Entrar con Email" : "Crear cuenta con Email"}
+                  </button>
+
+                  <div style={{ opacity: 0.7, fontSize: 12, lineHeight: 1.35 }}>
+                    *Para Email/Password: habilítalo en Firebase Console → Authentication → Sign-in method.
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -319,7 +479,7 @@ export default function Home() {
               </div>
 
               <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-                <button onClick={createSession} disabled={creating} style={btnPrimary}>
+                <button onClick={createSession} disabled={isBusy} style={btnPrimary}>
                   {creating ? "Creando..." : "➕ Crear sesión"}
                 </button>
 
@@ -358,7 +518,11 @@ export default function Home() {
               </div>
 
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={joinSession} style={btnPrimary} disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}>
+                <button
+                  onClick={joinSession}
+                  style={btnPrimary}
+                  disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}
+                >
                   🚀 Entrar
                 </button>
                 <button onClick={() => setJoinId("")} style={btnGhost}>
@@ -554,10 +718,7 @@ const codePill = {
   minWidth: 0,
 };
 
-const recentListWrap = {
-  display: "grid",
-  gap: 8,
-};
+const recentListWrap = { display: "grid", gap: 8 };
 
 const recentRow = {
   display: "grid",
@@ -601,11 +762,7 @@ const emailRow = {
   textOverflow: "ellipsis",
 };
 
-const hintRow = {
-  opacity: 0.72,
-  fontSize: 12,
-  lineHeight: 1.35,
-};
+const hintRow = { opacity: 0.72, fontSize: 12, lineHeight: 1.35 };
 
 const helperRow = (type) => ({
   marginTop: 10,

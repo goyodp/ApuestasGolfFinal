@@ -9,7 +9,18 @@ import {
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
 } from "firebase/auth";
-import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  serverTimestamp,
+  doc,
+  setDoc,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth } from "../firebase/auth";
 import { db } from "../firebase/db";
 import { useNavigate } from "react-router-dom";
@@ -45,7 +56,6 @@ function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
 
-  // Firebase errors often include `code`
   const code = e?.code ? String(e.code) : "";
   const msg =
     e?.message ||
@@ -74,7 +84,6 @@ function firebaseNiceMessage(err) {
 
 /* ---------------- Input restrictions ---------------- */
 
-// Session IDs are Firestore doc IDs: allow [A-Za-z0-9_-] only, max 60.
 function sanitizeSessionId(raw) {
   const s = String(raw ?? "");
   let out = "";
@@ -116,6 +125,13 @@ export default function Home() {
   const [joinId, setJoinId] = useState("");
   const [recent, setRecent] = useState(() => loadRecent());
 
+  // ✅ NEW: session name input (optional)
+  const [newSessionName, setNewSessionName] = useState("");
+
+  // ✅ NEW: My sessions list
+  const [mySessions, setMySessions] = useState([]);
+  const [loadingMySessions, setLoadingMySessions] = useState(false);
+
   // Email UI
   const [showEmail, setShowEmail] = useState(false);
   const [email, setEmail] = useState("");
@@ -132,6 +148,39 @@ export default function Home() {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
   }, []);
+
+  // ✅ NEW: live list of sessions user belongs to
+  useEffect(() => {
+    if (!user?.uid) {
+      setMySessions([]);
+      return;
+    }
+
+    setLoadingMySessions(true);
+
+    // IMPORTANT: requires index (memberUids array-contains + orderBy updatedAt)
+    const qy = query(
+      collection(db, "sessions"),
+      where("memberUids", "array-contains", user.uid),
+      orderBy("updatedAt", "desc")
+    );
+
+    const unsub = onSnapshot(
+      qy,
+      (snap) => {
+        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setMySessions(rows);
+        setLoadingMySessions(false);
+      },
+      (err) => {
+        console.error("mySessions onSnapshot error:", err);
+        setMySessions([]);
+        setLoadingMySessions(false);
+      }
+    );
+
+    return () => unsub();
+  }, [user?.uid]);
 
   const joinHint = useMemo(() => {
     const t = (joinId || "").trim();
@@ -171,7 +220,7 @@ export default function Home() {
     }
   };
 
-  /* ---------------- Auth: Apple (native plugin only) ---------------- */
+  /* ---------------- Auth: Apple ---------------- */
 
   const loginApple = async () => {
     if (platform !== "ios") return;
@@ -179,20 +228,11 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // IMPORTANT:
-      // With @capacitor-firebase/authentication, this call already signs into Firebase Auth (native).
-      // Do NOT build OAuthProvider credential manually, or you will hit nonce/duplicate issues.
       await FirebaseAuthentication.signInWithApple({
         scopes: ["email", "name"],
       });
-      // onAuthStateChanged will handle the rest.
     } catch (e) {
       const msg = firebaseNiceMessage(e);
-
-      // If Apple gets "stuck", it’s usually cached by the device:
-      // - Delete app
-      // - iOS Settings > Apple ID > Sign-In & Security > Apps Using Apple ID > Stop using
-      // - reinstall
       alert(
         [
           "No se pudo iniciar sesión con Apple.",
@@ -232,14 +272,10 @@ export default function Home() {
         await createUserWithEmailAndPassword(auth, em, pw);
       }
     } catch (e) {
-      // Better UX:
-      // If user tried to LOGIN but account doesn't exist → offer to create it.
       const code = String(e?.code || "").toLowerCase();
 
       if (emailMode === "login" && code.includes("auth/user-not-found")) {
-        const ok = window.confirm(
-          "Ese email no tiene cuenta.\n\n¿Quieres crear una cuenta con ese email y password?"
-        );
+        const ok = window.confirm("Ese email no tiene cuenta.\n\n¿Quieres crear una cuenta con ese email y password?");
         if (ok) {
           try {
             await createUserWithEmailAndPassword(auth, em, pw);
@@ -288,12 +324,22 @@ export default function Home() {
 
     setCreating(true);
     try {
+      const nowName =
+        String(newSessionName || "").trim() || `Session ${new Date().toLocaleString()}`;
+
+      // ✅ IMPORTANT: add members + memberUids
       const sessionRef = await addDoc(collection(db, "sessions"), {
-        name: `Session ${new Date().toLocaleString()}`,
+        name: nowName,
         status: "live",
         courseId: "campestre-slp",
         hcpPercent: 100,
+
         createdBy: user.uid,
+        ownerUid: user.uid, // opcional pero útil
+
+        members: { [user.uid]: true },
+        memberUids: [user.uid],
+
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -315,6 +361,7 @@ export default function Home() {
       });
 
       setRecent(addRecent(newSessionId));
+      setNewSessionName("");
       navigate(`/session/${newSessionId}`);
     } catch (e) {
       alert(firebaseNiceMessage(e));
@@ -323,18 +370,29 @@ export default function Home() {
     }
   };
 
-  const joinSession = () => {
+  // ✅ NEW: secure join using Cloud Function
+  const joinSession = async () => {
+    if (!user?.uid) return alert("Inicia sesión para unirte.");
+
     const id = sanitizeSessionId(joinId).trim();
     if (!id) return alert("Pega el Session ID.");
     if (!isLikelyValidSessionId(id)) {
       return alert("Ese Session ID se ve inválido. Revisa que sea el ID completo (solo letras, números, - y _).");
     }
-    setRecent(addRecent(id));
-    navigate(`/session/${id}`);
+
+    try {
+      const fn = httpsCallable(getFunctions(), "joinSession");
+      await fn({ sessionId: id });
+
+      setRecent(addRecent(id));
+      navigate(`/session/${id}`);
+    } catch (e) {
+      console.error("joinSession failed:", e);
+      alert(firebaseNiceMessage(e));
+    }
   };
 
   const pasteFromClipboard = async () => {
-    // On iOS WKWebView clipboard read often fails. Provide fallback.
     try {
       const t = await navigator.clipboard.readText();
       if (t) return setJoinId(sanitizeSessionId(t.trim()));
@@ -389,7 +447,6 @@ export default function Home() {
                 </button>
               ) : null}
 
-              {/* Email toggle */}
               <button
                 onClick={() => setShowEmail((v) => !v)}
                 disabled={isBusy}
@@ -481,7 +538,17 @@ export default function Home() {
                 </div>
               </div>
 
-              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+              {/* ✅ NEW session name */}
+              <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                <div style={{ opacity: 0.8, fontSize: 12, fontWeight: 900 }}>Nombre de sesión (opcional)</div>
+                <input
+                  value={newSessionName}
+                  onChange={(e) => setNewSessionName(e.target.value)}
+                  placeholder="Ej: Animalario Domingo"
+                  style={input}
+                  maxLength={50}
+                />
+
                 <button onClick={createSession} disabled={isBusy} style={btnPrimary}>
                   {creating ? "Creando..." : "➕ Crear sesión"}
                 </button>
@@ -492,10 +559,12 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Join + Recents */}
+            {/* Join + My sessions + Recents */}
             <div style={card}>
               <div style={cardTitle}>Entrar a una sesión</div>
-              <div style={{ opacity: 0.82, marginTop: 6 }}>Pega el Session ID y entra directo.</div>
+              <div style={{ opacity: 0.82, marginTop: 6 }}>
+                Pega el Session ID y la app te agrega como miembro (seguro).
+              </div>
 
               <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
                 <input
@@ -533,8 +602,42 @@ export default function Home() {
                 </button>
               </div>
 
+              {/* ✅ NEW: My Sessions */}
+              <div style={{ marginTop: 18 }}>
+                <div style={{ fontWeight: 950, marginBottom: 8 }}>Mis sesiones</div>
+
+                {loadingMySessions ? (
+                  <div style={{ opacity: 0.7, fontSize: 12 }}>Cargando…</div>
+                ) : mySessions.length === 0 ? (
+                  <div style={{ opacity: 0.65, fontSize: 12 }}>Aún no tienes sesiones (crea una o únete con ID).</div>
+                ) : (
+                  <div style={recentListWrap}>
+                    {mySessions.slice(0, 10).map((s) => (
+                      <button
+                        key={s.id}
+                        style={mySessionRowBtn}
+                        onClick={() => {
+                          setRecent(addRecent(s.id));
+                          navigate(`/session/${s.id}`);
+                        }}
+                        type="button"
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={mySessionName}>{s.name || "Sesión"}</div>
+                          <div style={mySessionMeta}>
+                            <code style={{ opacity: 0.9 }}>{s.id}</code>
+                          </div>
+                        </div>
+                        <div style={openPill}>Abrir</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Recents */}
               {recent.length > 0 ? (
-                <div style={{ marginTop: 14 }}>
+                <div style={{ marginTop: 18 }}>
                   <div style={{ fontWeight: 950, marginBottom: 8 }}>Recientes</div>
 
                   <div style={recentListWrap}>
@@ -782,3 +885,37 @@ const helperRow = (type) => ({
   fontSize: 12,
   fontWeight: 900,
 });
+
+// ✅ NEW: “My sessions” row styling
+const mySessionRowBtn = {
+  width: "100%",
+  padding: 12,
+  borderRadius: 16,
+  border: "1px solid #2a2a2a",
+  background: "#0f0f0f",
+  color: "white",
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+  alignItems: "center",
+  textAlign: "left",
+};
+
+const mySessionName = {
+  fontWeight: 950,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  maxWidth: "60vw",
+};
+
+const mySessionMeta = { marginTop: 6, fontSize: 12, opacity: 0.7, overflow: "hidden" };
+
+const openPill = {
+  padding: "8px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(59,130,246,0.35)",
+  background: "rgba(59,130,246,0.18)",
+  color: "#dbeafe",
+  fontWeight: 950,
+};

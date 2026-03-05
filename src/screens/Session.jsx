@@ -129,6 +129,13 @@ export default function Session() {
   const [savingEntry, setSavingEntry] = useState(false);
   const [savingBolaRosa, setSavingBolaRosa] = useState(false);
 
+  // ✅ NEW: permission / loading errors
+  const [sessionError, setSessionError] = useState("");
+
+  // ✅ NEW: rename session (owner-only)
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+
   // ✅ NEW: Remote courses from Firestore
   const [remoteCourses, setRemoteCourses] = useState({});
   const [coursesLoading, setCoursesLoading] = useState(true);
@@ -162,24 +169,53 @@ export default function Session() {
 
   useEffect(() => {
     if (!sessionRef) return;
-    return onSnapshot(sessionRef, (snap) => {
-      setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null);
-    });
+
+    setSessionError("");
+
+    return onSnapshot(
+      sessionRef,
+      (snap) => {
+        setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+      },
+      (err) => {
+        console.error("session onSnapshot error:", err);
+        const code = String(err?.code || "");
+        if (code.includes("permission-denied")) {
+          setSessionError("No tienes acceso a esta sesión. Ve a Home y únete con el Session ID.");
+        } else {
+          setSessionError(err?.message || "Error cargando sesión.");
+        }
+        setSession(null);
+      }
+    );
   }, [sessionRef]);
+
+  // ✅ NEW: keep draft in sync
+  useEffect(() => {
+    setNameDraft(String(session?.name || ""));
+  }, [session?.name]);
 
   useEffect(() => {
     if (!sessionId) return;
     const settingsRef = doc(db, "sessions", sessionId, "settings", "main");
-    return onSnapshot(settingsRef, (snap) => setSettings(snap.exists() ? snap.data() : null));
+    return onSnapshot(
+      settingsRef,
+      (snap) => setSettings(snap.exists() ? snap.data() : null),
+      (err) => console.error("settings onSnapshot error:", err)
+    );
   }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
     const groupsRef = collection(db, "sessions", sessionId, "groups");
     const q = query(groupsRef, orderBy("order", "asc"));
-    return onSnapshot(q, (snap) => {
-      setGroups(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
+    return onSnapshot(
+      q,
+      (snap) => {
+        setGroups(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (err) => console.error("groups onSnapshot error:", err)
+    );
   }, [sessionId]);
 
   // Subscribe to each group's state/main
@@ -189,10 +225,14 @@ export default function Session() {
     const unsubs = [];
     groups.forEach((g) => {
       const ref = doc(db, "sessions", sessionId, "groups", g.id, "state", "main");
-      const unsub = onSnapshot(ref, (snap) => {
-        const data = snap.exists() ? snap.data() : null;
-        setGroupsStateMap((prev) => ({ ...prev, [g.id]: data }));
-      });
+      const unsub = onSnapshot(
+        ref,
+        (snap) => {
+          const data = snap.exists() ? snap.data() : null;
+          setGroupsStateMap((prev) => ({ ...prev, [g.id]: data }));
+        },
+        (err) => console.error("group state onSnapshot error:", err)
+      );
       unsubs.push(unsub);
     });
 
@@ -235,6 +275,10 @@ export default function Session() {
   const hcpPercent = session?.hcpPercent ?? 100;
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
+
+  // ✅ owner per YOUR rules: createdBy only
+  const uid = auth.currentUser?.uid || null;
+  const isOwner = !!uid && session?.createdBy === uid;
 
   // ✅ NEW: merged courses
   const ALL_COURSES = useMemo(() => {
@@ -352,6 +396,27 @@ export default function Session() {
       alert(e?.message || "No se pudo actualizar Bola Rosa");
     } finally {
       setSavingBolaRosa(false);
+    }
+  };
+
+  // ✅ NEW: commit session name (owner-only)
+  const commitSessionName = async () => {
+    if (!sessionRef) return;
+    if (!isOwner) return;
+
+    const cleaned = String(nameDraft || "").trim().slice(0, 50);
+    if (!cleaned) return alert("Pon un nombre.");
+
+    setRenaming(true);
+    try {
+      await updateDoc(sessionRef, { name: cleaned, updatedAt: serverTimestamp() });
+      toast("Nombre actualizado ✅");
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "No se pudo renombrar la sesión");
+      setNameDraft(String(session?.name || ""));
+    } finally {
+      setRenaming(false);
     }
   };
 
@@ -540,6 +605,35 @@ export default function Session() {
     );
   }
 
+  if (sessionError) {
+    return (
+      <div style={page}>
+        <div style={fallbackCard}>
+          <div style={{ fontWeight: 1000, fontSize: 18, color: "white" }}>Sin acceso</div>
+          <div style={{ marginTop: 8, opacity: 0.8 }}>{sessionError}</div>
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button style={btn} onClick={() => navigate("/")}>
+              Volver a Home
+            </button>
+            <button
+              style={btn}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(sessionId);
+                  toast("Session ID copiado ✅");
+                } catch {
+                  alert("Copia manual: " + sessionId);
+                }
+              }}
+            >
+              Copiar ID
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!session) return <div style={page}>Cargando sesión...</div>;
 
   // groupsFull from live map
@@ -595,7 +689,11 @@ export default function Session() {
 
       {/* ✅ NEW modal */}
       {openAddCourse ? (
-        <Modal title="Agregar campo" subtitle="Pega Par y SI (18 valores) · se guarda para todos" onClose={() => setOpenAddCourse(false)}>
+        <Modal
+          title="Agregar campo"
+          subtitle="Pega Par y SI (18 valores) · se guarda para todos"
+          onClose={() => setOpenAddCourse(false)}
+        >
           <div style={grid2}>
             <div style={field}>
               <div style={label}>Nombre</div>
@@ -685,6 +783,28 @@ export default function Session() {
           setOpen={setOpenSession}
         >
           <div style={grid2}>
+            {/* ✅ NEW rename */}
+            <div style={field}>
+              <div style={label}>Nombre de sesión</div>
+              <input
+                style={{ ...inputDark, width: "100%" }}
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Ej: Animalario Domingo"
+                disabled={!isOwner}
+                onBlur={() => {
+                  if (isOwner) commitSessionName();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                maxLength={50}
+              />
+              <div style={hint}>
+                {isOwner ? (renaming ? "Guardando…" : "Solo tú puedes cambiarlo.") : "Solo el owner puede cambiarlo."}
+              </div>
+            </div>
+
             <div style={field}>
               <div style={label}>Session ID</div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

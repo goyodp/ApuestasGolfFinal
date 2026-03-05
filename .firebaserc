@@ -1,0 +1,7 @@
+cat > .firebaserc <<'EOF'
+{
+  "projects": {
+    "default": "golf-scorecard---gdpdv"
+  }
+}
+EOF

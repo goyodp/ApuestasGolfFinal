@@ -81,6 +81,13 @@ function normalizeErr(e) {
 
 function firebaseNiceMessage(err) {
   const code = String(err?.code || "").toLowerCase();
+  const msg = String(
+    err?.message ||
+      err?.error ||
+      err?.localizedDescription ||
+      err?.details ||
+      ""
+  ).toLowerCase();
 
   if (code.includes("auth/user-not-found")) return "Ese usuario no existe.";
   if (code.includes("auth/wrong-password")) return "Contraseña incorrecta.";
@@ -93,6 +100,10 @@ function firebaseNiceMessage(err) {
 
   if (code.includes("auth/missing-or-invalid-nonce")) {
     return "Apple: nonce inválido. Borra la app del iPhone y vuelve a intentar. Si sigue: Settings > Apple ID > Apps Using Apple ID > Stop Using Apple ID para esta app.";
+  }
+
+  if (msg.includes("no credentials available")) {
+    return "Android no encontró credenciales disponibles para Google. Ya ajustamos el flujo para evitar Credential Manager, pero si sigue saliendo, revisa que Google Play Services y Play Store estén activos y actualizados.";
   }
 
   return normalizeErr(err);
@@ -153,6 +164,7 @@ function isLikelyValidSessionId(id) {
 
 function extractGoogleTokens(res) {
   const c = res?.credential || res?.credentials || res?.authentication || res?.userCredential?.credential || {};
+
   const idToken =
     c?.idToken ||
     c?.id_token ||
@@ -176,6 +188,7 @@ function extractGoogleTokens(res) {
 
 function extractAppleTokens(res) {
   const c = res?.credential || res?.credentials || res?.authentication || {};
+
   const idToken =
     c?.idToken ||
     c?.identityToken ||
@@ -216,6 +229,7 @@ export default function Home() {
 
   const platform = Capacitor.getPlatform(); // "ios" | "android" | "web"
   const isNative = Capacitor.isNativePlatform();
+  const isAndroid = platform === "android";
   const showApple = platform === "ios";
   const isBusy = loadingGoogle || loadingApple || loadingEmail || creating;
 
@@ -268,6 +282,7 @@ export default function Home() {
   const loginGoogle = async () => {
     if (isBusy) return;
     setLoadingGoogle(true);
+
     try {
       if (!isNative) {
         const provider = new GoogleAuthProvider();
@@ -275,12 +290,22 @@ export default function Home() {
         return;
       }
 
-      // Ayuda a evitar “silent hangs” en algunos iOS
       try {
         await FirebaseAuthentication.useAppLanguage();
       } catch {}
 
-      const res = await withTimeout(FirebaseAuthentication.signInWithGoogle(), 45000, "Google Sign-In");
+      const googleOptions = isAndroid
+        ? {
+            useCredentialManager: false,
+          }
+        : undefined;
+
+      const res = await withTimeout(
+        FirebaseAuthentication.signInWithGoogle(googleOptions),
+        45000,
+        "Google Sign-In"
+      );
+
       const { idToken, accessToken } = extractGoogleTokens(res);
 
       if (!idToken && !accessToken) {
@@ -431,13 +456,10 @@ export default function Home() {
         status: "live",
         courseId: "campestre-slp",
         hcpPercent: 100,
-
         createdBy: user.uid,
         ownerUid: user.uid,
-
         members: { [user.uid]: true },
         memberUids: [user.uid],
-
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -614,7 +636,6 @@ export default function Home() {
           </div>
         ) : (
           <div style={grid2}>
-            {/* (el resto de tu UI igual, lo dejo tal cual para no romper nada) */}
             <div style={card}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 {user.photoURL ? (

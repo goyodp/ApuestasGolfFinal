@@ -1,0 +1,9 @@
+cat > firebase.json <<'EOF'
+{
+  "functions": [
+    {
+      "source": "functions"
+    }
+  ]
+}
+EOF

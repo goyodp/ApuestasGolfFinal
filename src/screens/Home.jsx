@@ -4,6 +4,7 @@ import {
   onAuthStateChanged,
   signOut,
   GoogleAuthProvider,
+  OAuthProvider, // ✅ FIX: needed to bridge Apple native -> Web SDK
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -228,9 +229,34 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      await FirebaseAuthentication.signInWithApple({
+      // 1) Native sign-in
+      const res = await FirebaseAuthentication.signInWithApple({
         scopes: ["email", "name"],
       });
+
+      // 2) ✅ Bridge to Firebase Web SDK so onAuthStateChanged(auth) updates
+      const idToken =
+        res?.credential?.idToken ||
+        res?.credential?.identityToken ||
+        res?.credential?.id_token ||
+        null;
+
+      const rawNonce =
+        res?.credential?.nonce ||
+        res?.credential?.rawNonce ||
+        null;
+
+      if (!idToken) {
+        throw new Error("Apple no regresó idToken. No puedo sincronizar con Firebase Web.");
+      }
+
+      const provider = new OAuthProvider("apple.com");
+      const cred = provider.credential({
+        idToken,
+        rawNonce: rawNonce || undefined,
+      });
+
+      await signInWithCredential(auth, cred);
     } catch (e) {
       const msg = firebaseNiceMessage(e);
       alert(
@@ -324,8 +350,7 @@ export default function Home() {
 
     setCreating(true);
     try {
-      const nowName =
-        String(newSessionName || "").trim() || `Session ${new Date().toLocaleString()}`;
+      const nowName = String(newSessionName || "").trim() || `Session ${new Date().toLocaleString()}`;
 
       // ✅ IMPORTANT: add members + memberUids
       const sessionRef = await addDoc(collection(db, "sessions"), {
@@ -381,6 +406,8 @@ export default function Home() {
     }
 
     try {
+      // If your function is deployed in a region OTHER than us-central1,
+      // change this to: getFunctions(undefined, "YOUR_REGION")
       const fn = httpsCallable(getFunctions(), "joinSession");
       await fn({ sessionId: id });
 

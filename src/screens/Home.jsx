@@ -106,6 +106,19 @@ function firebaseNiceMessage(err) {
     return "Android no encontró credenciales disponibles para Google. Ya ajustamos el flujo para evitar Credential Manager, pero si sigue saliendo, revisa que Google Play Services y Play Store estén activos y actualizados.";
   }
 
+  if (code.includes("functions/internal")) {
+    return "La función de unirse a la sesión falló en el servidor.";
+  }
+  if (code.includes("functions/not-found")) {
+    return "La sesión no existe.";
+  }
+  if (code.includes("functions/unauthenticated")) {
+    return "Debes iniciar sesión primero.";
+  }
+  if (code.includes("functions/invalid-argument")) {
+    return "El Session ID es inválido.";
+  }
+
   return normalizeErr(err);
 }
 
@@ -227,7 +240,7 @@ export default function Home() {
 
   const navigate = useNavigate();
 
-  const platform = Capacitor.getPlatform(); // "ios" | "android" | "web"
+  const platform = Capacitor.getPlatform();
   const isNative = Capacitor.isNativePlatform();
   const isAndroid = platform === "android";
   const showApple = platform === "ios";
@@ -295,9 +308,7 @@ export default function Home() {
       } catch {}
 
       const googleOptions = isAndroid
-        ? {
-            useCredentialManager: false,
-          }
+        ? { useCredentialManager: false }
         : undefined;
 
       const res = await withTimeout(
@@ -500,13 +511,16 @@ export default function Home() {
     }
 
     try {
-      const fn = httpsCallable(getFunctions(), "joinSession");
+      const fn = httpsCallable(getFunctions(undefined, "us-central1"), "joinSession");
       await fn({ sessionId: id });
 
       setRecent(addRecent(id));
       navigate(`/session/${id}`);
     } catch (e) {
       console.error("joinSession failed:", e);
+      console.error("joinSession code:", e?.code);
+      console.error("joinSession message:", e?.message);
+      console.error("joinSession details:", e?.details);
       alert(firebaseNiceMessage(e));
     }
   };

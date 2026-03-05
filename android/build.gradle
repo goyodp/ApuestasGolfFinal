@@ -5,6 +5,16 @@ buildscript {
     google()
     mavenCentral()
   }
+
+  // ✅ Esto es CLAVE: fuerza versiones también en el classpath de Gradle (plugins)
+  configurations.classpath {
+    resolutionStrategy {
+      force "org.bouncycastle:bcprov-jdk18on:1.78.1"
+      force "org.bouncycastle:bcutil-jdk18on:1.78.1"
+      force "org.bouncycastle:bcpkix-jdk18on:1.78.1"
+    }
+  }
+
   dependencies {
     classpath "com.android.tools.build:gradle:8.2.2"
     classpath "com.google.gms:google-services:4.4.1"
@@ -17,6 +27,7 @@ allprojects {
     mavenCentral()
   }
 
+  // ✅ Y esto cubre dependencias normales del proyecto (por si también entra por ahí)
   configurations.all {
     resolutionStrategy {
       force "org.bouncycastle:bcprov-jdk18on:1.78.1"

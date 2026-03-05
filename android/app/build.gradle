@@ -10,13 +10,13 @@ if (keystorePropertiesFile.exists()) {
 android {
   namespace "com.apuestas.golf"
 
-  // ✅ Ya NO dependemos de rootProject.ext.*
-  compileSdk 34
+  // ✅ Requerido por androidx.core 1.17.0 / activity 1.11.0
+  compileSdk 36
 
   defaultConfig {
     applicationId "com.apuestas.golf"
     minSdk 23
-    targetSdk 34
+    targetSdk 36
     versionCode 1
     versionName "1.0"
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -53,7 +53,7 @@ android {
     }
   }
 
-  // Opcional pero recomendado para Java 17 / AGP 8.x
+  // ✅ Java 17 / AGP 8.x
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17

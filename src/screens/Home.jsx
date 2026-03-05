@@ -1,6 +1,12 @@
 // src/screens/Home.jsx
 import React, { useEffect, useMemo, useState } from "react";
-import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithCredential } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  signOut,
+  GoogleAuthProvider,
+  OAuthProvider,
+  signInWithCredential,
+} from "firebase/auth";
 import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
 import { auth } from "../firebase/auth";
 import { db } from "../firebase/db";
@@ -135,13 +141,40 @@ export default function Home() {
   };
 
   const loginApple = async () => {
-    // Hard guard: Apple only on iOS
     if (Capacitor.getPlatform() !== "ios") return;
     if (isBusy) return;
 
     setLoadingApple(true);
+
     try {
-      await FirebaseAuthentication.signInWithApple();
+      // 1) Login nativo
+      const res = await FirebaseAuthentication.signInWithApple();
+
+      // 2) Extraer tokens (varía por versión)
+      const idToken =
+        res?.credential?.idToken ||
+        res?.credential?.identityToken ||
+        res?.credential?.id_token ||
+        null;
+
+      const rawNonce =
+        res?.credential?.nonce ||
+        res?.credential?.rawNonce ||
+        null;
+
+      if (!idToken) {
+        throw new Error("Apple login no regresó idToken (identityToken).");
+      }
+
+      // 3) Convertir a Firebase Auth credential
+      const provider = new OAuthProvider("apple.com");
+      const credential = provider.credential({
+        idToken,
+        rawNonce: rawNonce || undefined,
+      });
+
+      // 4) Iniciar sesión en Firebase Auth (esto dispara onAuthStateChanged)
+      await signInWithCredential(auth, credential);
     } catch (e) {
       alert(normalizeErr(e));
     } finally {
@@ -281,7 +314,7 @@ export default function Home() {
 
                 <div style={{ minWidth: 0 }}>
                   <div style={nameRow}>{user.displayName || "Usuario"}</div>
-                  <div style={emailRow}>{user.email}</div>
+                  <div style={emailRow}>{user.email || ""}</div>
                 </div>
               </div>
 
@@ -325,11 +358,7 @@ export default function Home() {
               </div>
 
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  onClick={joinSession}
-                  style={btnPrimary}
-                  disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}
-                >
+                <button onClick={joinSession} style={btnPrimary} disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}>
                   🚀 Entrar
                 </button>
                 <button onClick={() => setJoinId("")} style={btnGhost}>
@@ -359,11 +388,7 @@ export default function Home() {
                             Abrir
                           </button>
 
-                          <button
-                            style={btnDanger}
-                            onClick={() => removeRecent(id)}
-                            aria-label="Quitar de recientes"
-                          >
+                          <button style={btnDanger} onClick={() => removeRecent(id)} aria-label="Quitar de recientes">
                             ✕
                           </button>
                         </div>

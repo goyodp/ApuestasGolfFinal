@@ -54,6 +54,11 @@ function normalizeErr(e) {
   return msg;
 }
 
+function isNonceErrMessage(msg = "") {
+  const t = String(msg || "").toLowerCase();
+  return t.includes("missing-or-invalid-nonce") || t.includes("invalid nonce") || t.includes("auth/missing-or-invalid-nonce");
+}
+
 /* ---------------- Input restrictions ---------------- */
 
 // Session IDs are Firestore doc IDs: allow [A-Za-z0-9_-] only, max 60.
@@ -102,27 +107,13 @@ function randomNonce(length = 32) {
   return result;
 }
 
-function bytesToBase64Url(bytes) {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  const base64 = btoa(binary);
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
 async function sha256base64url(input) {
   if (!globalThis.crypto?.subtle?.digest) return null;
   const data = new TextEncoder().encode(input);
   const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", data);
-  return bytesToBase64Url(new Uint8Array(hashBuffer));
-}
-
-async function waitForUser(ms = 2000) {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (auth.currentUser) return auth.currentUser;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return null;
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const base64 = btoa(String.fromCharCode.apply(null, hashArray));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /* ---------------- Screen ---------------- */
@@ -193,7 +184,7 @@ export default function Home() {
     }
   };
 
-  /* ---------------- Auth: Apple (nonce-correct + no double-signin) ---------------- */
+  /* ---------------- Auth: Apple (nonce-correct) ---------------- */
 
   const loginApple = async () => {
     if (platform !== "ios") return;
@@ -201,22 +192,17 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // NEW nonce per attempt
+      // 1) NEW nonce per attempt
       const rawNonce = randomNonce(32);
       const hashedNonce = await sha256base64url(rawNonce);
 
-      // 1) Native Apple login via plugin. Prefer sending hashed nonce.
+      // 2) Ask Apple login. Plugin supports options.nonce (hashed)
       const res = await FirebaseAuthentication.signInWithApple({
         ...(hashedNonce ? { nonce: hashedNonce } : {}),
         scopes: ["email", "name"],
       });
 
-      // 2) Many plugin versions already sign in to Firebase internally.
-      // Wait briefly for auth.currentUser to appear; if it does, we're done.
-      const u = await waitForUser(2000);
-      if (u) return;
-
-      // 3) Fallback manual signInWithCredential ONLY if user didn't appear
+      // 3) Extract idToken (varies by version/platform)
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.identityToken ||
@@ -229,15 +215,33 @@ export default function Home() {
         throw new Error("Apple login no regresó idToken/identityToken.");
       }
 
+      // 4) Build Firebase Auth credential using *rawNonce*
       const provider = new OAuthProvider("apple.com");
       const credential = provider.credential({
         idToken,
-        rawNonce, // raw nonce that matches hashedNonce
+        rawNonce: rawNonce || undefined,
       });
 
       await signInWithCredential(auth, credential);
     } catch (e) {
-      alert(normalizeErr(e));
+      const msg = normalizeErr(e);
+
+      if (isNonceErrMessage(msg)) {
+        alert(
+          [
+            "Apple Auth (nonce) falló.",
+            "",
+            "✅ Fix rápido:",
+            "1) Borra la app del iPhone (delete app).",
+            "2) Reinstala el build desde Xcode/TestFlight.",
+            "3) Intenta Apple login de nuevo (genera nonce nuevo).",
+            "",
+            "Si sigue: revisa en Firebase Console que Sign-in with Apple esté Enabled.",
+          ].join("\n")
+        );
+      } else {
+        alert(msg);
+      }
     } finally {
       setLoadingApple(false);
     }
@@ -452,17 +456,10 @@ export default function Home() {
 
                   <button
                     onClick={loginEmail}
-                    disabled={
-                      isBusy ||
-                      (emailMode !== "login" ? !canSubmitEmail : !isEmailValid(email))
-                    }
+                    disabled={isBusy || (emailMode !== "login" ? !canSubmitEmail : !isEmailValid(email))}
                     style={btnPrimary}
                   >
-                    {loadingEmail
-                      ? "Procesando..."
-                      : emailMode === "login"
-                      ? "Entrar con Email"
-                      : "Crear cuenta con Email"}
+                    {loadingEmail ? "Procesando..." : emailMode === "login" ? "Entrar con Email" : "Crear cuenta con Email"}
                   </button>
 
                   <div style={{ opacity: 0.7, fontSize: 12, lineHeight: 1.35 }}>
@@ -535,11 +532,7 @@ export default function Home() {
               </div>
 
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  onClick={joinSession}
-                  style={btnPrimary}
-                  disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}
-                >
+                <button onClick={joinSession} style={btnPrimary} disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}>
                   🚀 Entrar
                 </button>
                 <button onClick={() => setJoinId("")} style={btnGhost}>
@@ -569,11 +562,7 @@ export default function Home() {
                             Abrir
                           </button>
 
-                          <button
-                            style={btnDanger}
-                            onClick={() => removeRecent(id)}
-                            aria-label="Quitar de recientes"
-                          >
+                          <button style={btnDanger} onClick={() => removeRecent(id)} aria-label="Quitar de recientes">
                             ✕
                           </button>
                         </div>
@@ -596,9 +585,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>
-                  Aquí aparecerán tus sesiones recientes.
-                </div>
+                <div style={{ marginTop: 14, opacity: 0.6, fontSize: 12 }}>Aquí aparecerán tus sesiones recientes.</div>
               )}
             </div>
           </div>

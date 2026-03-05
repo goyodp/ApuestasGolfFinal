@@ -4,7 +4,7 @@ import {
   onAuthStateChanged,
   signOut,
   GoogleAuthProvider,
-  OAuthProvider, // ✅ FIX: needed to bridge Apple native -> Web SDK
+  OAuthProvider, // ✅ needed for Apple bridge
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -52,6 +52,8 @@ function addRecent(sessionId) {
   saveRecent(next);
   return next;
 }
+
+/* ---------------- Errors ---------------- */
 
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
@@ -113,6 +115,15 @@ function isLikelyValidSessionId(id) {
   return true;
 }
 
+/* ---------------- Apple nonce helper ---------------- */
+
+function randomNonce(len = 32) {
+  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
 /* ---------------- Screen ---------------- */
 
 export default function Home() {
@@ -126,10 +137,10 @@ export default function Home() {
   const [joinId, setJoinId] = useState("");
   const [recent, setRecent] = useState(() => loadRecent());
 
-  // ✅ NEW: session name input (optional)
+  // session name (optional)
   const [newSessionName, setNewSessionName] = useState("");
 
-  // ✅ NEW: My sessions list
+  // My sessions list
   const [mySessions, setMySessions] = useState([]);
   const [loadingMySessions, setLoadingMySessions] = useState(false);
 
@@ -150,7 +161,7 @@ export default function Home() {
     return () => unsub();
   }, []);
 
-  // ✅ NEW: live list of sessions user belongs to
+  // live list of sessions user belongs to
   useEffect(() => {
     if (!user?.uid) {
       setMySessions([]);
@@ -159,7 +170,6 @@ export default function Home() {
 
     setLoadingMySessions(true);
 
-    // IMPORTANT: requires index (memberUids array-contains + orderBy updatedAt)
     const qy = query(
       collection(db, "sessions"),
       where("memberUids", "array-contains", user.uid),
@@ -229,22 +239,27 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // 1) Native sign-in
+      // ✅ CRITICAL: generate nonce and pass it to native sign-in
+      const nonce = randomNonce(32);
+
       const res = await FirebaseAuthentication.signInWithApple({
         scopes: ["email", "name"],
+        // 👇 this is what avoids missing/invalid nonce + duplicate credential loops
+        nonce,     // hashed internally by the plugin / ASAuthorization
+        rawNonce: nonce,
       });
 
-      // 2) ✅ Bridge to Firebase Web SDK so onAuthStateChanged(auth) updates
       const idToken =
         res?.credential?.idToken ||
         res?.credential?.identityToken ||
         res?.credential?.id_token ||
         null;
 
+      // Some builds return nonce back; we prefer our own nonce
       const rawNonce =
-        res?.credential?.nonce ||
         res?.credential?.rawNonce ||
-        null;
+        res?.credential?.nonce ||
+        nonce;
 
       if (!idToken) {
         throw new Error("Apple no regresó idToken. No puedo sincronizar con Firebase Web.");
@@ -253,7 +268,7 @@ export default function Home() {
       const provider = new OAuthProvider("apple.com");
       const cred = provider.credential({
         idToken,
-        rawNonce: rawNonce || undefined,
+        rawNonce,
       });
 
       await signInWithCredential(auth, cred);
@@ -352,7 +367,6 @@ export default function Home() {
     try {
       const nowName = String(newSessionName || "").trim() || `Session ${new Date().toLocaleString()}`;
 
-      // ✅ IMPORTANT: add members + memberUids
       const sessionRef = await addDoc(collection(db, "sessions"), {
         name: nowName,
         status: "live",
@@ -360,7 +374,7 @@ export default function Home() {
         hcpPercent: 100,
 
         createdBy: user.uid,
-        ownerUid: user.uid, // opcional pero útil
+        ownerUid: user.uid,
 
         members: { [user.uid]: true },
         memberUids: [user.uid],
@@ -395,7 +409,7 @@ export default function Home() {
     }
   };
 
-  // ✅ NEW: secure join using Cloud Function
+  // secure join using Cloud Function
   const joinSession = async () => {
     if (!user?.uid) return alert("Inicia sesión para unirte.");
 
@@ -406,8 +420,6 @@ export default function Home() {
     }
 
     try {
-      // If your function is deployed in a region OTHER than us-central1,
-      // change this to: getFunctions(undefined, "YOUR_REGION")
       const fn = httpsCallable(getFunctions(), "joinSession");
       await fn({ sessionId: id });
 
@@ -565,7 +577,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* ✅ NEW session name */}
               <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
                 <div style={{ opacity: 0.8, fontSize: 12, fontWeight: 900 }}>Nombre de sesión (opcional)</div>
                 <input
@@ -629,7 +640,7 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* ✅ NEW: My Sessions */}
+              {/* My Sessions */}
               <div style={{ marginTop: 18 }}>
                 <div style={{ fontWeight: 950, marginBottom: 8 }}>Mis sesiones</div>
 
@@ -913,7 +924,6 @@ const helperRow = (type) => ({
   fontWeight: 900,
 });
 
-// ✅ NEW: “My sessions” row styling
 const mySessionRowBtn = {
   width: "100%",
   padding: 12,

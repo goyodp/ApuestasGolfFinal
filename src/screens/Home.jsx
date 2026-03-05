@@ -4,7 +4,6 @@ import {
   onAuthStateChanged,
   signOut,
   GoogleAuthProvider,
-  OAuthProvider,
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -45,18 +44,32 @@ function addRecent(sessionId) {
 function normalizeErr(e) {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
+
+  // Firebase errors often include `code`
+  const code = e?.code ? String(e.code) : "";
   const msg =
     e?.message ||
     e?.error ||
     e?.localizedDescription ||
     e?.details ||
     (typeof e === "object" ? JSON.stringify(e) : String(e));
-  return msg;
+
+  return code ? `${code}: ${msg}` : msg;
 }
 
-function isNonceErrMessage(msg = "") {
-  const t = String(msg || "").toLowerCase();
-  return t.includes("missing-or-invalid-nonce") || t.includes("invalid nonce") || t.includes("auth/missing-or-invalid-nonce");
+function firebaseNiceMessage(err) {
+  const code = String(err?.code || "").toLowerCase();
+
+  if (code.includes("auth/user-not-found")) return "Ese usuario no existe.";
+  if (code.includes("auth/wrong-password")) return "Contraseña incorrecta.";
+  if (code.includes("auth/invalid-credential")) return "Credenciales inválidas. Revisa email y contraseña.";
+  if (code.includes("auth/invalid-email")) return "Email inválido.";
+  if (code.includes("auth/email-already-in-use")) return "Ese email ya tiene cuenta. Usa 'Entrar'.";
+  if (code.includes("auth/weak-password")) return "Password muy débil (mínimo 6 caracteres).";
+  if (code.includes("auth/network-request-failed")) return "Sin conexión. Revisa tu internet.";
+  if (code.includes("auth/too-many-requests")) return "Demasiados intentos. Espera un poco e intenta de nuevo.";
+
+  return normalizeErr(err);
 }
 
 /* ---------------- Input restrictions ---------------- */
@@ -88,32 +101,6 @@ function isLikelyValidSessionId(id) {
     if (!ok) return false;
   }
   return true;
-}
-
-/* ---------------- Nonce helpers for Apple ---------------- */
-
-function randomNonce(length = 32) {
-  const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._";
-  let result = "";
-  const values = new Uint8Array(length);
-
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(values);
-    for (let i = 0; i < length; i++) result += charset[values[i] % charset.length];
-    return result;
-  }
-
-  for (let i = 0; i < length; i++) result += charset[Math.floor(Math.random() * charset.length)];
-  return result;
-}
-
-async function sha256base64url(input) {
-  if (!globalThis.crypto?.subtle?.digest) return null;
-  const data = new TextEncoder().encode(input);
-  const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const base64 = btoa(String.fromCharCode.apply(null, hashArray));
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /* ---------------- Screen ---------------- */
@@ -178,13 +165,13 @@ export default function Home() {
       const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
       await signInWithCredential(auth, credential);
     } catch (e) {
-      alert(normalizeErr(e));
+      alert(firebaseNiceMessage(e));
     } finally {
       setLoadingGoogle(false);
     }
   };
 
-  /* ---------------- Auth: Apple (nonce-correct) ---------------- */
+  /* ---------------- Auth: Apple (native plugin only) ---------------- */
 
   const loginApple = async () => {
     if (platform !== "ios") return;
@@ -192,56 +179,32 @@ export default function Home() {
 
     setLoadingApple(true);
     try {
-      // 1) NEW nonce per attempt
-      const rawNonce = randomNonce(32);
-      const hashedNonce = await sha256base64url(rawNonce);
-
-      // 2) Ask Apple login. Plugin supports options.nonce (hashed)
-      const res = await FirebaseAuthentication.signInWithApple({
-        ...(hashedNonce ? { nonce: hashedNonce } : {}),
+      // IMPORTANT:
+      // With @capacitor-firebase/authentication, this call already signs into Firebase Auth (native).
+      // Do NOT build OAuthProvider credential manually, or you will hit nonce/duplicate issues.
+      await FirebaseAuthentication.signInWithApple({
         scopes: ["email", "name"],
       });
-
-      // 3) Extract idToken (varies by version/platform)
-      const idToken =
-        res?.credential?.idToken ||
-        res?.credential?.identityToken ||
-        res?.credential?.id_token ||
-        res?.credential?.identity_token ||
-        res?.credential?.token ||
-        null;
-
-      if (!idToken) {
-        throw new Error("Apple login no regresó idToken/identityToken.");
-      }
-
-      // 4) Build Firebase Auth credential using *rawNonce*
-      const provider = new OAuthProvider("apple.com");
-      const credential = provider.credential({
-        idToken,
-        rawNonce: rawNonce || undefined,
-      });
-
-      await signInWithCredential(auth, credential);
+      // onAuthStateChanged will handle the rest.
     } catch (e) {
-      const msg = normalizeErr(e);
+      const msg = firebaseNiceMessage(e);
 
-      if (isNonceErrMessage(msg)) {
-        alert(
-          [
-            "Apple Auth (nonce) falló.",
-            "",
-            "✅ Fix rápido:",
-            "1) Borra la app del iPhone (delete app).",
-            "2) Reinstala el build desde Xcode/TestFlight.",
-            "3) Intenta Apple login de nuevo (genera nonce nuevo).",
-            "",
-            "Si sigue: revisa en Firebase Console que Sign-in with Apple esté Enabled.",
-          ].join("\n")
-        );
-      } else {
-        alert(msg);
-      }
+      // If Apple gets "stuck", it’s usually cached by the device:
+      // - Delete app
+      // - iOS Settings > Apple ID > Sign-In & Security > Apps Using Apple ID > Stop using
+      // - reinstall
+      alert(
+        [
+          "No se pudo iniciar sesión con Apple.",
+          "",
+          msg,
+          "",
+          "Si se queda atorado con nonce/duplicate:",
+          "1) Borra la app del iPhone.",
+          "2) Settings > Apple ID > Sign-In & Security > Apps Using Apple ID > (tu app) > Stop Using Apple ID.",
+          "3) Reinstala e intenta de nuevo.",
+        ].join("\n")
+      );
     } finally {
       setLoadingApple(false);
     }
@@ -254,30 +217,56 @@ export default function Home() {
 
   const loginEmail = async () => {
     if (isBusy) return;
-    if (!isEmailValid(email)) return alert("Pon un email válido.");
-    if (emailMode !== "login" && String(pass || "").length < 6) return alert("Password mínimo 6 caracteres.");
+
+    const em = String(email || "").trim();
+    const pw = String(pass || "");
+
+    if (!isEmailValid(em)) return alert("Pon un email válido.");
+    if (emailMode === "signup" && pw.length < 6) return alert("Password mínimo 6 caracteres.");
 
     setLoadingEmail(true);
     try {
       if (emailMode === "login") {
-        await signInWithEmailAndPassword(auth, email.trim(), pass);
+        await signInWithEmailAndPassword(auth, em, pw);
       } else {
-        await createUserWithEmailAndPassword(auth, email.trim(), pass);
+        await createUserWithEmailAndPassword(auth, em, pw);
       }
     } catch (e) {
-      alert(normalizeErr(e));
+      // Better UX:
+      // If user tried to LOGIN but account doesn't exist → offer to create it.
+      const code = String(e?.code || "").toLowerCase();
+
+      if (emailMode === "login" && code.includes("auth/user-not-found")) {
+        const ok = window.confirm(
+          "Ese email no tiene cuenta.\n\n¿Quieres crear una cuenta con ese email y password?"
+        );
+        if (ok) {
+          try {
+            await createUserWithEmailAndPassword(auth, em, pw);
+            return;
+          } catch (e2) {
+            alert(firebaseNiceMessage(e2));
+            return;
+          }
+        }
+        alert("Ok. Si ya tienes cuenta, revisa que el email esté bien escrito.");
+        return;
+      }
+
+      alert(firebaseNiceMessage(e));
     } finally {
       setLoadingEmail(false);
     }
   };
 
   const resetPassword = async () => {
-    if (!isEmailValid(email)) return alert("Pon tu email para mandarte el reset.");
+    const em = String(email || "").trim();
+    if (!isEmailValid(em)) return alert("Pon tu email para mandarte el reset.");
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      await sendPasswordResetEmail(auth, em);
       alert("Listo. Te mandé un correo para resetear tu contraseña.");
     } catch (e) {
-      alert(normalizeErr(e));
+      alert(firebaseNiceMessage(e));
     }
   };
 
@@ -328,7 +317,7 @@ export default function Home() {
       setRecent(addRecent(newSessionId));
       navigate(`/session/${newSessionId}`);
     } catch (e) {
-      alert(normalizeErr(e));
+      alert(firebaseNiceMessage(e));
     } finally {
       setCreating(false);
     }
@@ -532,7 +521,11 @@ export default function Home() {
               </div>
 
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={joinSession} style={btnPrimary} disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}>
+                <button
+                  onClick={joinSession}
+                  style={btnPrimary}
+                  disabled={!isLikelyValidSessionId(sanitizeSessionId(joinId))}
+                >
                   🚀 Entrar
                 </button>
                 <button onClick={() => setJoinId("")} style={btnGhost}>
@@ -665,7 +658,7 @@ const card = {
   borderRadius: 18,
   padding: 14,
   background: "linear-gradient(180deg, #0b0b0b 0%, #070707 100%)",
-  boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+  boxShadow: "0 10px 30px rgba(0, 0, 0, 0.35)",
 };
 
 const cardTitle = { fontWeight: 950, fontSize: 16 };
@@ -781,10 +774,10 @@ const helperRow = (type) => ({
   border: "1px solid #2a2a2a",
   background:
     type === "ok"
-      ? "rgba(34,197,94,0.10)"
+      ? "rgba(34, 197, 94, 0.10)"
       : type === "warn"
-      ? "rgba(251,146,60,0.10)"
-      : "rgba(148,163,184,0.08)",
+      ? "rgba(251, 146, 60, 0.10)"
+      : "rgba(148, 163, 184, 0.08)",
   color: type === "ok" ? "#bbf7d0" : type === "warn" ? "#fed7aa" : "#e5e7eb",
   fontSize: 12,
   fontWeight: 900,

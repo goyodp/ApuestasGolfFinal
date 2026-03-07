@@ -1,4 +1,3 @@
-// src/screens/Session.jsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -13,7 +12,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-  where, // ✅ NEW
+  where,
 } from "firebase/firestore";
 import { db } from "../firebase/db";
 import { auth } from "../firebase/auth";
@@ -36,12 +35,9 @@ function clampInt(n, min, max) {
 
 function sanitizeIntInput(raw, { allowNegative = false } = {}) {
   const s = String(raw ?? "");
-  // Keep only digits (and optional leading -)
   let out = s.replace(/[^\d-]/g, "");
   if (!allowNegative) out = out.replace(/-/g, "");
-  // only first leading "-"
   if (allowNegative) out = out.replace(/(?!^)-/g, "");
-  // collapse multiple leading zeros (but keep "0" or "-0")
   if (out === "-" || out === "") return out;
   const sign = out.startsWith("-") ? "-" : "";
   const digits = out.replace(/-/g, "");
@@ -82,7 +78,6 @@ function countFilledScores(scoresObj) {
   return n;
 }
 
-// Parse "18 numbers" from CSV/space/newline/semicolon
 function parse18Numbers(raw) {
   const nums = String(raw ?? "")
     .replace(/\n/g, " ")
@@ -119,28 +114,25 @@ export default function Session() {
   const navigate = useNavigate();
 
   const [session, setSession] = useState(null);
-  const [settings, setSettings] = useState(null); // settings/main (entryFee + bolaRosaEnabled)
+  const [settings, setSettings] = useState(null);
   const [groups, setGroups] = useState([]);
-  const [groupsStateMap, setGroupsStateMap] = useState({}); // { [groupId]: stateMain }
+  const [groupsStateMap, setGroupsStateMap] = useState({});
 
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
   const [savingHistory, setSavingHistory] = useState(false);
   const [savingEntry, setSavingEntry] = useState(false);
   const [savingBolaRosa, setSavingBolaRosa] = useState(false);
+  const [savingManualDiffs, setSavingManualDiffs] = useState(false);
 
-  // ✅ NEW: permission / loading errors
   const [sessionError, setSessionError] = useState("");
 
-  // ✅ NEW: rename session (owner-only)
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
 
-  // ✅ NEW: Remote courses from Firestore
   const [remoteCourses, setRemoteCourses] = useState({});
   const [coursesLoading, setCoursesLoading] = useState(true);
 
-  // ✅ NEW: Add Course modal
   const [openAddCourse, setOpenAddCourse] = useState(false);
   const [addingCourse, setAddingCourse] = useState(false);
   const [newCourseName, setNewCourseName] = useState("");
@@ -148,18 +140,15 @@ export default function Session() {
   const [newCourseParText, setNewCourseParText] = useState("");
   const [newCourseSiText, setNewCourseSiText] = useState("");
 
-  // UI collapsables
   const [openSession, setOpenSession] = useState(true);
   const [openH2H, setOpenH2H] = useState(false);
   const [openLeaderboards, setOpenLeaderboards] = useState(true);
   const [openGroups, setOpenGroups] = useState(true);
 
-  // Cross-group H2H
   const [h2hA, setH2hA] = useState("");
   const [h2hB, setH2hB] = useState("");
 
-  // Leaderboard view
-  const [lbTab, setLbTab] = useState("stb"); // "stb" | "net"
+  const [lbTab, setLbTab] = useState("stb");
   const [lbShowAll, setLbShowAll] = useState(false);
 
   const sessionRef = useMemo(() => {
@@ -190,7 +179,6 @@ export default function Session() {
     );
   }, [sessionRef]);
 
-  // ✅ NEW: keep draft in sync
   useEffect(() => {
     setNameDraft(String(session?.name || ""));
   }, [session?.name]);
@@ -218,7 +206,6 @@ export default function Session() {
     );
   }, [sessionId]);
 
-  // Subscribe to each group's state/main
   useEffect(() => {
     if (!sessionId) return;
 
@@ -239,7 +226,6 @@ export default function Session() {
     return () => unsubs.forEach((u) => u && u());
   }, [sessionId, groups]);
 
-  // ✅ NEW: Load approved courses from Firestore (live)
   useEffect(() => {
     setCoursesLoading(true);
     const qy = query(collection(db, "courses"), where("approved", "==", true));
@@ -275,12 +261,11 @@ export default function Session() {
   const hcpPercent = session?.hcpPercent ?? 100;
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
+  const manualMatchDiffsEnabled = !!session?.manualMatchDiffsEnabled;
 
-  // ✅ owner per YOUR rules: createdBy only
   const uid = auth.currentUser?.uid || null;
   const isOwner = !!uid && session?.createdBy === uid;
 
-  // ✅ NEW: merged courses
   const ALL_COURSES = useMemo(() => {
     return { ...COURSE_DATA, ...remoteCourses };
   }, [remoteCourses]);
@@ -296,7 +281,6 @@ export default function Session() {
 
   const courseLabel = COURSES.find((c) => c.id === courseId)?.label || courseId;
 
-  // Controlled drafts (prevents weird input + enforces numeric)
   const [hcpDraft, setHcpDraft] = useState(String(hcpPercent));
   const [entryDraft, setEntryDraft] = useState(String(entryFee));
 
@@ -399,7 +383,23 @@ export default function Session() {
     }
   };
 
-  // ✅ NEW: commit session name (owner-only)
+  const toggleManualMatchDiffs = async (checked) => {
+    if (!sessionRef) return;
+    setSavingManualDiffs(true);
+    try {
+      await updateDoc(sessionRef, {
+        manualMatchDiffsEnabled: !!checked,
+        updatedAt: serverTimestamp(),
+      });
+      toast(`Ventajas manuales ${checked ? "ON ✅" : "OFF ✅"}`);
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "No se pudo actualizar la opción de ventajas manuales");
+    } finally {
+      setSavingManualDiffs(false);
+    }
+  };
+
   const commitSessionName = async () => {
     if (!sessionRef) return;
     if (!isOwner) return;
@@ -445,7 +445,6 @@ export default function Session() {
     }
   };
 
-  // ✅ NEW: Create course in Firestore
   const createCourse = async () => {
     if (addingCourse) return;
     const uid = auth.currentUser?.uid || null;
@@ -458,11 +457,11 @@ export default function Session() {
     const strokeIndexes = parse18Numbers(newCourseSiText);
 
     if (!parValues) {
-      alert("Par inválido: pega 18 números (separados por coma, espacio o salto de línea).");
+      alert("Par inválido: pega 18 números.");
       return;
     }
     if (!strokeIndexes) {
-      alert("SI inválido: pega 18 números (separados por coma, espacio o salto de línea).");
+      alert("SI inválido: pega 18 números.");
       return;
     }
 
@@ -479,7 +478,7 @@ export default function Session() {
         region: String(newCourseRegion || "").trim(),
         parValues,
         strokeIndexes,
-        approved: true, // si luego quieres moderación, cambia a false
+        approved: true,
         source: "user",
         createdBy: uid,
         createdAt: serverTimestamp(),
@@ -500,7 +499,6 @@ export default function Session() {
     }
   };
 
-  // ---------- History snapshot ----------
   const buildSnapshot = async () => {
     const sessionSnap = await getDoc(doc(db, "sessions", sessionId));
     const sessionData = sessionSnap.exists() ? sessionSnap.data() : {};
@@ -535,12 +533,20 @@ export default function Session() {
     for (const g of groupsFull) {
       const ps = g.players || [];
       const sc = g.scores || {};
+      const manualDiffs = g.manualDiffs || {};
       const res = [];
       for (let i = 0; i < ps.length; i++) {
         for (let j = i + 1; j < ps.length; j++) {
           const a = ps[i];
           const b = ps[j];
-          const r = computeMatchResultForPair({ a, b, scores: sc, courseId: snapshotCourseId });
+          const key = [a.id, b.id].sort().join("|");
+          const r = computeMatchResultForPair({
+            a,
+            b,
+            scores: sc,
+            courseId: snapshotCourseId,
+            manualDiff: manualDiffs[key],
+          });
           res.push(r);
         }
       }
@@ -560,6 +566,7 @@ export default function Session() {
         status: sessionData?.status || "",
         courseId: snapshotCourseId,
         hcpPercent: snapshotHcpPercent,
+        manualMatchDiffsEnabled: !!sessionData?.manualMatchDiffsEnabled,
       },
       settings: settingsData,
       groups: groupsFull,
@@ -591,7 +598,6 @@ export default function Session() {
     }
   };
 
-  // ---------- Guards ----------
   if (!sessionId) {
     return (
       <div style={page}>
@@ -636,7 +642,6 @@ export default function Session() {
 
   if (!session) return <div style={page}>Cargando sesión...</div>;
 
-  // groupsFull from live map
   const groupsFull = groups.map((g) => ({
     id: g.id,
     name: g.name || g.id,
@@ -647,7 +652,6 @@ export default function Session() {
   const { stablefordRows, netRows } = computeLeaderboards({ groupsFull, courseId, hcpPercent });
   const prizes = computeEntryPrizes({ groupsFull, courseId, hcpPercent, entryFee });
 
-  // Build list for cross-group H2H
   const allPlayers = [];
   for (const g of groupsFull) {
     const ps = g.players || [];
@@ -672,7 +676,6 @@ export default function Session() {
     const scoresA = gA?.scores?.[pickA.playerId] || Array(18).fill("");
     const scoresB = gB?.scores?.[pickB.playerId] || Array(18).fill("");
 
-    // Avoid ID collision across groups (p1/p2 repeats)
     const a = { id: `A__${pickA.groupId}__${pickA.playerId}`, name: pickA.name, hcp: pickA.hcp };
     const b = { id: `B__${pickB.groupId}__${pickB.playerId}`, name: pickB.name, hcp: pickB.hcp };
 
@@ -687,7 +690,6 @@ export default function Session() {
     <div style={page}>
       <style>{baseCss}</style>
 
-      {/* ✅ NEW modal */}
       {openAddCourse ? (
         <Modal
           title="Agregar campo"
@@ -736,7 +738,7 @@ export default function Session() {
                 placeholder="Ej: 11,3,13,17,7,5,1,15,9,2,18,10,16,4,8,14,12,6"
                 rows={4}
               />
-              <div style={hint}>No se puede repetir ningún número (1..18 una sola vez).</div>
+              <div style={hint}>No se puede repetir ningún número.</div>
             </div>
 
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -751,7 +753,6 @@ export default function Session() {
         </Modal>
       ) : null}
 
-      {/* App Bar */}
       <div style={appBar}>
         <button onClick={() => navigate("/")} style={iconBtn} aria-label="Home">
           ←
@@ -775,7 +776,6 @@ export default function Session() {
       </div>
 
       <div style={content}>
-        {/* Session Settings */}
         <Collapsible
           title="Configuración"
           subtitle={`Status ${session.status || "live"} · Entry ${fmtMoney(entryFee)} · Bola Rosa ${bolaRosaEnabled ? "On" : "Off"}`}
@@ -783,7 +783,6 @@ export default function Session() {
           setOpen={setOpenSession}
         >
           <div style={grid2}>
-            {/* ✅ NEW rename */}
             <div style={field}>
               <div style={label}>Nombre de sesión</div>
               <input
@@ -817,8 +816,6 @@ export default function Session() {
 
             <div style={field}>
               <div style={label}>Campo</div>
-
-              {/* ✅ Same look, just added +Campo button */}
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <select
                   value={courseId}
@@ -879,7 +876,23 @@ export default function Session() {
               {savingEntry ? <div style={hint}>Guardando…</div> : null}
             </div>
 
-            {/* NEW Pool & Premios */}
+            <div style={{ ...field, gridColumn: "1 / -1" }}>
+              <label style={togglePill}>
+                <input
+                  type="checkbox"
+                  checked={manualMatchDiffsEnabled}
+                  onChange={(e) => toggleManualMatchDiffs(e.target.checked)}
+                />
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                  <span style={{ fontWeight: 950, color: "white" }}>Permitir ventajas manuales por grupo</span>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>
+                    Si está activo, en cada grupo podrás editar la ventaja de cada match.
+                  </span>
+                </div>
+              </label>
+              {savingManualDiffs ? <div style={hint}>Guardando…</div> : null}
+            </div>
+
             <div style={{ ...field, gridColumn: "1 / -1" }}>
               <div style={label}>Pool & Premios</div>
 
@@ -955,7 +968,6 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        {/* H2H */}
         <Collapsible title="Head-to-Head (cross-group)" subtitle="Cualquier jugador vs cualquier jugador · F9/B9/Total" open={openH2H} setOpen={setOpenH2H}>
           <div style={cardDark}>
             <div style={h2hPickGrid}>
@@ -1012,7 +1024,6 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        {/* Leaderboards */}
         <Collapsible title="Leaderboards" subtitle="General (Stableford / Net)" open={openLeaderboards} setOpen={setOpenLeaderboards}>
           <div style={cardDark}>
             <div style={lbTopRow}>
@@ -1063,11 +1074,7 @@ export default function Session() {
                       </td>
                       <td style={lbTd}>{r.hcp}</td>
                       <td style={lbTdVal}>
-                        {lbTab === "stb" ? (
-                          <b style={{ color: "white" }}>{r.stableford}</b>
-                        ) : (
-                          <b style={{ color: "white" }}>{r.net}</b>
-                        )}
+                        {lbTab === "stb" ? <b style={{ color: "white" }}>{r.stableford}</b> : <b style={{ color: "white" }}>{r.net}</b>}
                       </td>
                       <td style={lbTdRight}>
                         <span style={groupPill}>G{String(r.groupId || "").replace("group-", "") || "-"}</span>
@@ -1089,7 +1096,6 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        {/* Groups */}
         <Collapsible
           title="Groups"
           subtitle={`${groups.length} grupos · tap para abrir scorecard`}
@@ -1122,8 +1128,6 @@ export default function Session() {
     </div>
   );
 }
-
-/* ---------------- UI helpers ---------------- */
 
 function Collapsible({ title, subtitle, open, setOpen, right, children }) {
   return (
@@ -1206,7 +1210,6 @@ function rankPill(i) {
   };
 }
 
-// ✅ NEW: Modal (same look & feel)
 function Modal({ title, subtitle, onClose, children }) {
   return (
     <div style={modalOverlay} onMouseDown={onClose} role="dialog" aria-modal="true">
@@ -1226,7 +1229,7 @@ function Modal({ title, subtitle, onClose, children }) {
   );
 }
 
-/* ---------------- Styles (premium dark, mobile-first) ---------------- */
+/* ---------------- Styles ---------------- */
 
 const baseCss = `
   * { box-sizing: border-box; }
@@ -1428,8 +1431,6 @@ const togglePill = {
 
 const tableWrap = { overflowX: "auto", WebkitOverflowScrolling: "touch" };
 
-/* ----- NEW prizes layout ----- */
-
 const prizesGrid = {
   display: "grid",
   gridTemplateColumns: "1fr",
@@ -1511,8 +1512,6 @@ const sep = {
   background: "rgba(148,163,184,0.12)",
   margin: "12px 0",
 };
-
-/* ----- NEW leaderboards layout ----- */
 
 const lbTopRow = {
   display: "flex",
@@ -1699,7 +1698,6 @@ const btn = {
   fontWeight: 900,
 };
 
-/* ✅ NEW modal styles (match look & feel) */
 const modalOverlay = {
   position: "fixed",
   inset: 0,
@@ -1720,7 +1718,6 @@ const modalCard = {
   padding: 12,
 };
 
-/* ---- responsive tweaks ---- */
 if (typeof window !== "undefined") {
   const mq = window.matchMedia?.("(min-width: 860px)");
   if (mq?.matches) {

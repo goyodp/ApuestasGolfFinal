@@ -1,5 +1,3 @@
-// src/lib/compute.js
-
 // =====================
 // COURSES
 // =====================
@@ -18,7 +16,6 @@ export const COURSE_DATA = {
     strokeIndexes: [11, 3, 13, 17, 7, 5, 1, 15, 9, 2, 18, 10, 16, 4, 8, 14, 12, 6],
   },
 
-  // ---- MX (con par + handicap/índice) ----
   "club-de-golf-mexico": {
     name: "Club de Golf México (CDMX)",
     parValues: [4, 5, 3, 4, 3, 5, 4, 4, 4, 4, 5, 4, 4, 3, 4, 3, 5, 4],
@@ -41,7 +38,6 @@ export const COURSE_DATA = {
   // CERCA DE SLP (Centro)
   // =====================
 
-  // --- QUERÉTARO ---
   "san-gil": {
     name: "Club de Golf San Gil (Qro)",
     parValues: [5, 4, 4, 3, 4, 4, 3, 5, 4, 4, 5, 4, 3, 4, 5, 3, 4, 4],
@@ -66,7 +62,6 @@ export const COURSE_DATA = {
     strokeIndexes: [5, 17, 9, 7, 13, 3, 15, 1, 11, 10, 18, 6, 2, 12, 4, 14, 16, 8],
   },
 
-  // --- AGUASCALIENTES ---
   "pulgas-pandas": {
     name: "Club de Golf Pulgas Pandas (Ags)",
     parValues: [4, 5, 3, 4, 3, 4, 5, 4, 4, 4, 5, 3, 4, 3, 4, 5, 4, 4],
@@ -79,7 +74,6 @@ export const COURSE_DATA = {
     strokeIndexes: [5, 11, 7, 17, 13, 9, 1, 15, 3, 10, 14, 16, 6, 12, 4, 18, 8, 2],
   },
 
-  // --- GUADALAJARA / JALISCO ---
   "guadalajara-country-club": {
     name: "Guadalajara Country Club (Gdl)",
     parValues: [5, 4, 4, 3, 4, 4, 4, 3, 5, 4, 4, 5, 4, 4, 3, 4, 3, 5],
@@ -98,7 +92,6 @@ export const COURSE_DATA = {
     strokeIndexes: [11, 3, 9, 7, 15, 5, 13, 1, 17, 4, 18, 10, 2, 8, 14, 6, 12, 16],
   },
 
-  // --- GUANAJUATO ---
   "campestre-leon": {
     name: "Club Campestre de León (Gto)",
     parValues: [4, 4, 5, 3, 4, 4, 3, 4, 5, 4, 4, 5, 3, 4, 4, 3, 5, 4],
@@ -107,7 +100,6 @@ export const COURSE_DATA = {
 
   "ventanas-san-miguel": {
     name: "Ventanas de San Miguel (SMA, Gto)",
-    // Nota: este scorecard suma PAR 70 (35/35)
     parValues: [5, 4, 3, 4, 3, 5, 4, 4, 3, 4, 4, 3, 4, 5, 4, 4, 3, 4],
     strokeIndexes: [15, 3, 11, 5, 13, 1, 7, 9, 17, 14, 8, 18, 6, 4, 16, 12, 10, 2],
   },
@@ -161,7 +153,7 @@ export function scoreCategory(gross, par) {
 /**
  * buildStrokeArray supports POSITIVE and NEGATIVE strokes.
  * - Positive strokes: assign 1..18 (hardest holes first: SI 1,2,3...)
- * - Negative strokes (plus handicap): assign 18..1 (hardest penalties: SI 18,17,16...)
+ * - Negative strokes (plus handicap): assign 18..1
  *
  * Returned array is SIGNED:
  * - +1 means you RECEIVE a stroke (net = gross - 1)
@@ -193,19 +185,29 @@ export function buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes) {
 }
 
 /**
- * MATCHES are ALWAYS 100% handicap difference (no global %)
- * (strokes arrays returned are NON-NEGATIVE allocations for each player)
+ * For matches:
+ * diff > 0 => B receives strokes
+ * diff < 0 => A receives strokes
+ */
+export function buildMatchStrokesByDiff(diff, strokeIndexes) {
+  const d = Math.round(diff || 0);
+
+  const strokesA = d < 0 ? buildStrokeArray(Math.abs(d), strokeIndexes) : Array(18).fill(0);
+  const strokesB = d > 0 ? buildStrokeArray(d, strokeIndexes) : Array(18).fill(0);
+
+  return {
+    diff: d,
+    strokesA: strokesA.map((x) => Math.max(0, x)),
+    strokesB: strokesB.map((x) => Math.max(0, x)),
+  };
+}
+
+/**
+ * MATCHES are ALWAYS 100% handicap difference by default
  */
 export function buildMatchStrokesByHcpDiff100(hcpA, hcpB, strokeIndexes) {
   const diff = Math.round((hcpB - hcpA) * 1);
-
-  const strokesA = diff < 0 ? buildStrokeArray(Math.abs(diff), strokeIndexes) : Array(18).fill(0);
-  const strokesB = diff > 0 ? buildStrokeArray(diff, strokeIndexes) : Array(18).fill(0);
-
-  const normA = strokesA.map((x) => Math.max(0, x));
-  const normB = strokesB.map((x) => Math.max(0, x));
-
-  return { diff, strokesA: normA, strokesB: normB };
+  return buildMatchStrokesByDiff(diff, strokeIndexes);
 }
 
 // =====================
@@ -353,7 +355,7 @@ export function computeEntryPrizes({ groupsFull, courseId, hcpPercent, entryFee 
 }
 
 // =====================
-// Match play using 100% diff
+// Match play using 100% diff or manual diff
 // =====================
 function holeResult(aAdj, bAdj) {
   if (aAdj < bAdj) return 1;
@@ -361,14 +363,17 @@ function holeResult(aAdj, bAdj) {
   return 0;
 }
 
-export function computeMatchResultForPair({ a, b, scores, courseId }) {
+export function computeMatchResultForPair({ a, b, scores, courseId, manualDiff = null }) {
   const course = COURSE_DATA[courseId] || COURSE_DATA["campestre-slp"];
   const { strokeIndexes } = course;
 
   const grossA = scores[a.id] || Array(18).fill("");
   const grossB = scores[b.id] || Array(18).fill("");
 
-  const { diff, strokesA, strokesB } = buildMatchStrokesByHcpDiff100(a.hcp || 0, b.hcp || 0, strokeIndexes);
+  const useManual = Number.isFinite(Number(manualDiff));
+  const { diff, strokesA, strokesB } = useManual
+    ? buildMatchStrokesByDiff(Number(manualDiff), strokeIndexes)
+    : buildMatchStrokesByHcpDiff100(a.hcp || 0, b.hcp || 0, strokeIndexes);
 
   let front = 0;
   let back = 0;
@@ -404,21 +409,37 @@ function segmentMultiplier(dobladaEnabled) {
   return dobladaEnabled ? 2 : 1;
 }
 
-export function calcMatchMoneyForPair({ pairResult, matchBetsForPair, dobladasForPair }) {
+export function calcMatchMoneyForPair({
+  pairResult,
+  matchBetsForPair,
+  dobladasForPair,
+  carrySettings,
+}) {
   const bet = toNum(matchBetsForPair?.amount);
 
   const f9Mult = segmentMultiplier(!!dobladasForPair?.f9);
   const b9Mult = segmentMultiplier(!!dobladasForPair?.b9);
 
+  const carryF9ToTotal = !!carrySettings?.carryF9ToTotal;
+  const carryB9ToTotal = !!carrySettings?.carryB9ToTotal;
+
   const moneyF9 = pairResult.front === 0 ? 0 : Math.sign(pairResult.front) * bet * f9Mult;
   const moneyB9 = pairResult.back === 0 ? 0 : Math.sign(pairResult.back) * bet * b9Mult;
-  const moneyT = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * bet;
+
+  const carryToTotal =
+    (pairResult.front === 0 && carryF9ToTotal ? bet * f9Mult : 0) +
+    (pairResult.back === 0 && carryB9ToTotal ? bet * b9Mult : 0);
+
+  const totalStake = bet + carryToTotal;
+  const moneyT = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * totalStake;
 
   return {
     moneyF9,
     moneyB9,
     moneyT,
     moneyTotal: moneyF9 + moneyB9 + moneyT,
+    totalStake,
+    carryToTotal,
     multipliers: { f9Mult, b9Mult },
   };
 }
@@ -427,16 +448,18 @@ export function calcMatchMoneyForPair({ pairResult, matchBetsForPair, dobladasFo
 // Bonus / Greens / Matches totals
 // =====================
 export function computeBonusMoneyByPlayer({ players, scores, parValues, groupSettings }) {
-  const n = players.length;
-  const net = {};
-  players.forEach((p) => (net[p.id] = 0));
-  if (n <= 1) return net;
+  const out = {};
+  players.forEach((p) => (out[p.id] = 0));
+
+  const eligiblePlayers = players.filter((p) => p.bonusEligible !== false);
+  const n = eligiblePlayers.length;
+  if (n <= 1) return out;
 
   const birdiePay = toNum(groupSettings?.birdiePay);
   const eaglePay = toNum(groupSettings?.eaglePay);
   const albatrossPay = toNum(groupSettings?.albatrossPay);
 
-  for (const p of players) {
+  for (const p of eligiblePlayers) {
     const arr = scores[p.id] || Array(18).fill("");
 
     for (let i = 0; i < 18; i++) {
@@ -452,14 +475,14 @@ export function computeBonusMoneyByPlayer({ players, scores, parValues, groupSet
       else if (diff <= -3) pay = albatrossPay;
       if (!pay) continue;
 
-      for (const other of players) {
-        if (other.id === p.id) net[other.id] += pay * (n - 1);
-        else net[other.id] -= pay;
+      for (const other of eligiblePlayers) {
+        if (other.id === p.id) out[other.id] += pay * (n - 1);
+        else out[other.id] -= pay;
       }
     }
   }
 
-  return net;
+  return out;
 }
 
 export function computeGreensMoneyByPlayer({ players, greens, greensPay }) {
@@ -481,7 +504,15 @@ export function computeGreensMoneyByPlayer({ players, greens, greensPay }) {
   return out;
 }
 
-export function computeMatchesMoneyByPlayer({ players, scores, courseId, matchBets, dobladas }) {
+export function computeMatchesMoneyByPlayer({
+  players,
+  scores,
+  courseId,
+  matchBets,
+  dobladas,
+  manualDiffs,
+  groupSettings,
+}) {
   const out = {};
   players.forEach((p) => (out[p.id] = 0));
 
@@ -493,9 +524,25 @@ export function computeMatchesMoneyByPlayer({ players, scores, courseId, matchBe
 
       const bet = matchBets?.[key] || { amount: 0 };
       const dbl = dobladas?.[key] || { f9: false, b9: false };
+      const manualDiff = manualDiffs?.[key];
 
-      const pairRes = computeMatchResultForPair({ a, b, scores, courseId });
-      const money = calcMatchMoneyForPair({ pairResult: pairRes, matchBetsForPair: bet, dobladasForPair: dbl });
+      const pairRes = computeMatchResultForPair({
+        a,
+        b,
+        scores,
+        courseId,
+        manualDiff,
+      });
+
+      const money = calcMatchMoneyForPair({
+        pairResult: pairRes,
+        matchBetsForPair: bet,
+        dobladasForPair: dbl,
+        carrySettings: {
+          carryF9ToTotal: !!groupSettings?.carryF9ToTotal,
+          carryB9ToTotal: !!groupSettings?.carryB9ToTotal,
+        },
+      });
 
       out[a.id] += money.moneyTotal;
       out[b.id] -= money.moneyTotal;

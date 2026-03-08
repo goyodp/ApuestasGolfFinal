@@ -1,3 +1,4 @@
+// src/screens/Session.jsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -86,6 +87,7 @@ function parse18Numbers(raw) {
     .map((x) => x.trim())
     .filter(Boolean)
     .map((x) => Number(x));
+
   if (nums.length !== 18) return null;
   if (!nums.every(Number.isFinite)) return null;
   return nums;
@@ -261,7 +263,13 @@ export default function Session() {
   const hcpPercent = session?.hcpPercent ?? 100;
   const entryFee = settings?.entryFee ?? 0;
   const bolaRosaEnabled = !!settings?.bolaRosaEnabled;
-  const manualMatchDiffsEnabled = !!session?.manualMatchDiffsEnabled;
+  const manualMatchDiffsEnabled =
+    !!session?.manualMatchDiffsEnabled ||
+    !!session?.allowManualMatchDiffs ||
+    !!session?.allowManualAdvantages ||
+    !!session?.historyHcpEnabled ||
+    !!session?.useHistoricalHcp ||
+    !!session?.editableVentajas;
 
   const uid = auth.currentUser?.uid || null;
   const isOwner = !!uid && session?.createdBy === uid;
@@ -401,11 +409,16 @@ export default function Session() {
   };
 
   const commitSessionName = async () => {
-    if (!sessionRef) return;
-    if (!isOwner) return;
+    if (!sessionRef || !isOwner) return;
 
-    const cleaned = String(nameDraft || "").trim().slice(0, 50);
-    if (!cleaned) return alert("Pon un nombre.");
+    const cleaned = String(nameDraft || "")
+      .trim()
+      .slice(0, 50);
+
+    if (!cleaned) {
+      alert("Pon un nombre.");
+      return;
+    }
 
     setRenaming(true);
     try {
@@ -447,8 +460,9 @@ export default function Session() {
 
   const createCourse = async () => {
     if (addingCourse) return;
-    const uid = auth.currentUser?.uid || null;
-    if (!uid) {
+
+    const currentUid = auth.currentUser?.uid || null;
+    if (!currentUid) {
       alert("Necesitas iniciar sesión para agregar campos.");
       return;
     }
@@ -480,7 +494,7 @@ export default function Session() {
         strokeIndexes,
         approved: true,
         source: "user",
-        createdBy: uid,
+        createdBy: currentUid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -506,7 +520,9 @@ export default function Session() {
     const settingsSnap = await getDoc(doc(db, "sessions", sessionId, "settings", "main"));
     const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
 
-    const groupsSnap = await getDocs(query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc")));
+    const groupsSnap = await getDocs(
+      query(collection(db, "sessions", sessionId, "groups"), orderBy("order", "asc"))
+    );
     const groupsMeta = groupsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     const groupsFull = [];
@@ -533,13 +549,15 @@ export default function Session() {
     for (const g of groupsFull) {
       const ps = g.players || [];
       const sc = g.scores || {};
-      const manualDiffs = g.manualDiffs || {};
+      const manualDiffs = g.manualMatchDiffs || {};
+
       const res = [];
       for (let i = 0; i < ps.length; i++) {
         for (let j = i + 1; j < ps.length; j++) {
           const a = ps[i];
           const b = ps[j];
           const key = [a.id, b.id].sort().join("|");
+
           const r = computeMatchResultForPair({
             a,
             b,
@@ -547,6 +565,7 @@ export default function Session() {
             courseId: snapshotCourseId,
             manualDiff: manualDiffs[key],
           });
+
           res.push(r);
         }
       }
@@ -968,7 +987,12 @@ export default function Session() {
           </div>
         </Collapsible>
 
-        <Collapsible title="Head-to-Head (cross-group)" subtitle="Cualquier jugador vs cualquier jugador · F9/B9/Total" open={openH2H} setOpen={setOpenH2H}>
+        <Collapsible
+          title="Head-to-Head (cross-group)"
+          subtitle="Cualquier jugador vs cualquier jugador · F9/B9/Total"
+          open={openH2H}
+          setOpen={setOpenH2H}
+        >
           <div style={cardDark}>
             <div style={h2hPickGrid}>
               <div>
@@ -1128,6 +1152,8 @@ export default function Session() {
     </div>
   );
 }
+
+/* ---------------- UI helpers ---------------- */
 
 function Collapsible({ title, subtitle, open, setOpen, right, children }) {
   return (

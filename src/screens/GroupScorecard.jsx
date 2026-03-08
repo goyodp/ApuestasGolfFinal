@@ -36,6 +36,8 @@ const DEFAULT_GROUP_SETTINGS = {
   eaglePay: 20,
   albatrossPay: 30,
   greensPay: 10,
+  carryF9ToTotal: false,
+  carryB9ToTotal: false,
 };
 
 const DEFAULT_BET_AMOUNT = 50;
@@ -48,15 +50,14 @@ const DEFAULT_STATE = {
   dobladas: {},
   greens: {},
   bolaRosa: "",
+  manualMatchDiffs: {},
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
 };
 
-// Allow: -12, -12.5, 12, 12.5, "", "-", ".", "-."
 function sanitizeSignedNumberStr(raw) {
   const s = String(raw ?? "").trim();
   if (s === "" || s === "-" || s === "." || s === "-.") return "";
-  // keep only digits, one dot, optional leading minus
   let out = "";
   let dot = false;
   for (let i = 0; i < s.length; i++) {
@@ -75,7 +76,6 @@ function sanitizeSignedNumberStr(raw) {
       continue;
     }
   }
-  // prevent just "-" or "." after filtering
   if (out === "" || out === "-" || out === "." || out === "-.") return "";
   return out;
 }
@@ -105,7 +105,6 @@ function toNonNegInt(raw, fallback = 0) {
   return Number.isFinite(n) ? Math.max(0, n) : fallback;
 }
 
-// Score: digits only, 0-99 (or 0-199 if you want, change maxLen)
 function sanitizeScoreStr(raw, maxLen = 2) {
   const s = String(raw ?? "");
   let out = "";
@@ -115,6 +114,21 @@ function sanitizeScoreStr(raw, maxLen = 2) {
   }
   if (maxLen && out.length > maxLen) out = out.slice(0, maxLen);
   return out;
+}
+
+function getStoredTheme() {
+  try {
+    const v = localStorage.getItem("apuestasGolf_groupTheme");
+    return v === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function segmentColorClass(v) {
+  if (v > 0) return "seg-pos";
+  if (v < 0) return "seg-neg";
+  return "seg-as";
 }
 
 /* ---------------- Screen ---------------- */
@@ -131,17 +145,14 @@ export default function GroupScorecard() {
   const [saving, setSaving] = useState(false);
   const [editingScores, setEditingScores] = useState({});
   const [screenshotMode, setScreenshotMode] = useState(false);
+  const [themeMode, setThemeMode] = useState(getStoredTheme());
 
-  // ✅ Offline awareness
   const [syncPending, setSyncPending] = useState(false);
   const [fromCache, setFromCache] = useState(false);
 
-  // Sticky column behavior (compact when user scrolls horizontally)
   const [stickyCompact, setStickyCompact] = useState(false);
   const tableWrapRef = useRef(null);
 
-  // Collapsables (mobile-first)
-  const [openPlayers, setOpenPlayers] = useState(true); // (kept in case you use later)
   const [openPayouts, setOpenPayouts] = useState(false);
   const [openGreens, setOpenGreens] = useState(false);
   const [openMatches, setOpenMatches] = useState(false);
@@ -158,33 +169,32 @@ export default function GroupScorecard() {
   );
 
   useEffect(() => {
+    try {
+      localStorage.setItem("apuestasGolf_groupTheme", themeMode);
+    } catch {}
+  }, [themeMode]);
+
+  useEffect(() => {
     if (!sessionRef) return;
-    return onSnapshot(
-      sessionRef,
-      { includeMetadataChanges: true },
-      (snap) => setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null)
-    );
+    return onSnapshot(sessionRef, { includeMetadataChanges: true }, (snap) => {
+      setSession(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+    });
   }, [sessionRef]);
 
   useEffect(() => {
     if (!settingsRef) return;
-    return onSnapshot(
-      settingsRef,
-      { includeMetadataChanges: true },
-      (snap) => setSettings(snap.exists() ? snap.data() : null)
-    );
+    return onSnapshot(settingsRef, { includeMetadataChanges: true }, (snap) => {
+      setSettings(snap.exists() ? snap.data() : null);
+    });
   }, [settingsRef]);
 
   useEffect(() => {
     if (!groupRef) return;
-    return onSnapshot(
-      groupRef,
-      { includeMetadataChanges: true },
-      (snap) => setGroupMeta(snap.exists() ? snap.data() : null)
-    );
+    return onSnapshot(groupRef, { includeMetadataChanges: true }, (snap) => {
+      setGroupMeta(snap.exists() ? snap.data() : null);
+    });
   }, [groupRef]);
 
-  // Listener + auto init + migration defaults
   useEffect(() => {
     if (!stateRef) return;
 
@@ -192,34 +202,46 @@ export default function GroupScorecard() {
       stateRef,
       { includeMetadataChanges: true },
       async (snap) => {
-        // ✅ Offline awareness (main doc where most writes happen)
         setSyncPending(snap.metadata.hasPendingWrites);
         setFromCache(snap.metadata.fromCache);
 
         if (snap.exists()) {
           const data = snap.data();
 
+          const rawPlayers = Array.isArray(data.players) ? data.players : [];
+          const migratedPlayers = rawPlayers.map((p) => ({
+            ...p,
+            bonusesEnabled: typeof p?.bonusesEnabled === "boolean" ? p.bonusesEnabled : true,
+          }));
+
           const gs = data.groupSettings || {};
           const nextGs = { ...DEFAULT_GROUP_SETTINGS, ...gs };
 
           const migratedGreens = data.greens || data.greenies || {};
           const migratedBolaRosa = typeof data.bolaRosa === "string" ? data.bolaRosa : "";
+          const migratedManualDiffs = data.manualMatchDiffs || data.matchDiffOverrides || {};
 
           const needsPatch =
             !data.groupSettings ||
             !data.greens ||
             !("bolaRosa" in data) ||
+            !("manualMatchDiffs" in data) ||
+            rawPlayers.some((p) => typeof p?.bonusesEnabled !== "boolean") ||
             nextGs.birdiePay !== gs.birdiePay ||
             nextGs.eaglePay !== gs.eaglePay ||
             nextGs.albatrossPay !== gs.albatrossPay ||
-            nextGs.greensPay !== gs.greensPay;
+            nextGs.greensPay !== gs.greensPay ||
+            nextGs.carryF9ToTotal !== gs.carryF9ToTotal ||
+            nextGs.carryB9ToTotal !== gs.carryB9ToTotal;
 
           if (needsPatch) {
             try {
               await updateDoc(stateRef, {
+                players: migratedPlayers,
                 groupSettings: nextGs,
                 greens: migratedGreens,
                 bolaRosa: migratedBolaRosa,
+                manualMatchDiffs: migratedManualDiffs,
                 updatedAt: serverTimestamp(),
               });
             } catch {}
@@ -227,9 +249,11 @@ export default function GroupScorecard() {
 
           setState({
             ...data,
+            players: migratedPlayers,
             groupSettings: nextGs,
             greens: migratedGreens,
             bolaRosa: migratedBolaRosa,
+            manualMatchDiffs: migratedManualDiffs,
           });
           return;
         }
@@ -258,6 +282,14 @@ export default function GroupScorecard() {
   const dobladas = state?.dobladas || {};
   const greens = state?.greens || {};
   const bolaRosa = state?.bolaRosa || "";
+  const manualMatchDiffs = state?.manualMatchDiffs || {};
+
+  const allowManualMatchDiffs =
+    !!session?.allowManualMatchDiffs ||
+    !!session?.allowManualAdvantages ||
+    !!session?.historyHcpEnabled ||
+    !!session?.useHistoricalHcp ||
+    !!session?.editableVentajas;
 
   const par3Holes = useMemo(() => {
     const out = [];
@@ -277,7 +309,6 @@ export default function GroupScorecard() {
     }
   };
 
-  // Default bet = 50 for every pair (auto-fill missing pairs)
   useEffect(() => {
     if (!state || players.length < 2) return;
 
@@ -288,7 +319,6 @@ export default function GroupScorecard() {
       for (let j = i + 1; j < players.length; j++) {
         const key = pairKey(players[i].id, players[j].id);
         const existing = matchBets[key];
-
         if (!existing || typeof existing.amount !== "number") {
           need[key] = { ...(existing || {}), amount: DEFAULT_BET_AMOUNT };
           changed = true;
@@ -296,11 +326,9 @@ export default function GroupScorecard() {
       }
     }
 
-    if (changed) {
-      patchState({ matchBets: { ...matchBets, ...need } });
-    }
+    if (changed) patchState({ matchBets: { ...matchBets, ...need } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players.map((p) => p.id).join("|"), state]); // intentionally coarse, avoids looping
+  }, [players.map((p) => p.id).join("|"), state]);
 
   const addPlayer = async () => {
     if (!state) return;
@@ -309,7 +337,15 @@ export default function GroupScorecard() {
     const existingIds = players.map((p) => p.id);
     const id = makePlayerId(existingIds);
 
-    const newPlayers = [...players, { id, name: `Player ${players.length + 1}`, hcp: 0 }];
+    const newPlayers = [
+      ...players,
+      {
+        id,
+        name: `Player ${players.length + 1}`,
+        hcp: 0,
+        bonusesEnabled: true,
+      },
+    ];
     const newScores = { ...scores, [id]: Array(18).fill("") };
 
     await patchState({ players: newPlayers, scores: newScores });
@@ -323,6 +359,7 @@ export default function GroupScorecard() {
     if (!ok) return;
 
     const newPlayers = players.filter((pp) => pp.id !== playerId);
+
     const newScores = { ...scores };
     delete newScores[playerId];
 
@@ -338,7 +375,12 @@ export default function GroupScorecard() {
 
     const newDobladas = { ...dobladas };
     Object.keys(newDobladas).forEach((k) => {
-      if (k.split("|").includes(playerId)) delete dobladas[k];
+      if (k.split("|").includes(playerId)) delete newDobladas[k];
+    });
+
+    const newManualDiffs = { ...manualMatchDiffs };
+    Object.keys(newManualDiffs).forEach((k) => {
+      if (k.split("|").includes(playerId)) delete newManualDiffs[k];
     });
 
     const newBolaRosa = bolaRosa === playerId ? "" : bolaRosa;
@@ -350,6 +392,7 @@ export default function GroupScorecard() {
       matchBets: newMatchBets,
       dobladas: newDobladas,
       bolaRosa: newBolaRosa,
+      manualMatchDiffs: newManualDiffs,
     });
   };
 
@@ -359,10 +402,18 @@ export default function GroupScorecard() {
     await patchState({ players: newPlayers });
   };
 
+  const togglePlayerBonuses = async (playerId, checked) => {
+    if (!state) return;
+    const newPlayers = players.map((p) =>
+      p.id === playerId ? { ...p, bonusesEnabled: !!checked } : p
+    );
+    await patchState({ players: newPlayers });
+  };
+
   const commitScore = async (playerId, holeIndex, value) => {
     if (!state) return;
     const arr = Array.isArray(scores[playerId]) ? [...scores[playerId]] : Array(18).fill("");
-    arr[holeIndex] = value; // keep string numeric or ""
+    arr[holeIndex] = value;
     await patchState({ scores: { ...scores, [playerId]: arr } });
   };
 
@@ -394,6 +445,10 @@ export default function GroupScorecard() {
     await patchState({ groupSettings: { ...groupSettings, [field]: value } });
   };
 
+  const updateGroupToggle = async (field, checked) => {
+    await patchState({ groupSettings: { ...groupSettings, [field]: !!checked } });
+  };
+
   const setGreenWinner = async (holeNumber, playerIdOrEmpty) => {
     const next = { ...greens };
     if (!playerIdOrEmpty) delete next[String(holeNumber)];
@@ -412,6 +467,17 @@ export default function GroupScorecard() {
     const key = pairKey(aId, bId);
     const prev = dobladas[key] || { f9: false, b9: false };
     await patchState({ dobladas: { ...dobladas, [key]: { ...prev, [seg]: !!checked } } });
+  };
+
+  const setManualDiff = async (aId, bId, raw) => {
+    const key = pairKey(aId, bId);
+    const value = sanitizeSignedNumberStr(raw);
+    const next = { ...manualMatchDiffs };
+
+    if (value === "" || value === "-0" || value === "0") delete next[key];
+    else next[key] = Number(value);
+
+    await patchState({ manualMatchDiffs: next });
   };
 
   const setBolaRosa = async (playerIdOrEmpty) => {
@@ -440,29 +506,52 @@ export default function GroupScorecard() {
     }
   };
 
-  // Sticky compaction on horizontal scroll
   const onTableScroll = (e) => {
     const sl = e.currentTarget.scrollLeft || 0;
     setStickyCompact(sl > 10);
   };
 
-  if (!sessionId || !groupId) return <div style={fallback}>Faltan parámetros.</div>;
-  if (!groupMeta || state === undefined || !session) return <div style={fallback}>Cargando grupo...</div>;
-  if (state === null) return <div style={fallback}>No pude crear state/main (revisa reglas).</div>;
+  if (!sessionId || !groupId) return <div className="gs-fallback">Faltan parámetros.</div>;
+  if (!groupMeta || state === undefined || !session) return <div className="gs-fallback">Cargando grupo...</div>;
+  if (state === null) return <div className="gs-fallback">No pude crear state/main (revisa reglas).</div>;
 
-  // ===== Money inside group =====
-  const bonusByPlayer = computeBonusMoneyByPlayer({ players, scores, parValues: course.parValues, groupSettings });
-  const greensByPlayer = computeGreensMoneyByPlayer({ players, greens, greensPay: groupSettings.greensPay ?? 0 });
-  const matchesByPlayer = computeMatchesMoneyByPlayer({ players, scores, courseId, matchBets, dobladas });
+  const bonusByPlayer = computeBonusMoneyByPlayer({
+    players,
+    scores,
+    parValues: course.parValues,
+    groupSettings,
+  });
+
+  const greensByPlayer = computeGreensMoneyByPlayer({
+    players,
+    greens,
+    greensPay: groupSettings.greensPay ?? 0,
+  });
+
+  const matchesByPlayer = computeMatchesMoneyByPlayer({
+    players,
+    scores,
+    courseId,
+    matchBets,
+    dobladas,
+    groupSettings,
+    manualMatchDiffs,
+  });
 
   const moneyRows = players.map((p) => {
     const bonus = bonusByPlayer[p.id] || 0;
     const g = greensByPlayer[p.id] || 0;
     const m = matchesByPlayer[p.id] || 0;
-    return { id: p.id, name: p.name || p.id, matches: m, greens: g, bonus, total: m + g + bonus };
+    return {
+      id: p.id,
+      name: p.name || p.id,
+      matches: m,
+      greens: g,
+      bonus,
+      total: m + g + bonus,
+    };
   });
 
-  // ===== Build matches list for UI =====
   const matchesList = [];
   for (let i = 0; i < players.length; i++) {
     for (let j = i + 1; j < players.length; j++) {
@@ -472,112 +561,135 @@ export default function GroupScorecard() {
 
       const bet = matchBets[key] || { amount: DEFAULT_BET_AMOUNT };
       const dbl = dobladas[key] || { f9: false, b9: false };
+      const manualDiff = manualMatchDiffs[key];
 
-      const pairRes = computeMatchResultForPair({ a, b, scores, courseId });
-      const money = calcMatchMoneyForPair({ pairResult: pairRes, matchBetsForPair: bet, dobladasForPair: dbl });
+      const pairRes = computeMatchResultForPair({
+        a,
+        b,
+        scores,
+        courseId,
+        manualDiff,
+      });
 
-      matchesList.push({ key, a, b, pairRes, bet, dbl, money });
+      const money = calcMatchMoneyForPair({
+        pairResult: pairRes,
+        matchBetsForPair: bet,
+        dobladasForPair: dbl,
+        groupSettings,
+      });
+
+      matchesList.push({ key, a, b, pairRes, bet, dbl, money, manualDiff });
     }
   }
 
   const subtitle = `${course.name} · %Hcp ${hcpPercent} · ${players.length}/6 jugadores`;
-
-  const stickyW = stickyCompact ? 170 : 250; // <-- column width behavior
+  const stickyW = stickyCompact ? 205 : 310;
 
   return (
-    <div style={page}>
-      <style>{baseCss}</style>
+    <div className="gs-page" data-theme={themeMode}>
+      <style>{styles}</style>
 
-      {/* App Bar */}
-      <div style={appBar}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <button onClick={() => navigate(`/session/${sessionId}`)} style={iconBtn} aria-label="Volver">
+      <div className="gs-appbar">
+        <div className="gs-appbar-left">
+          <button onClick={() => navigate(`/session/${sessionId}`)} className="gs-icon-btn" aria-label="Volver">
             ←
           </button>
 
-          <div style={{ minWidth: 0 }}>
-            <div style={titleRow}>
-              <div style={titleText}>{groupMeta?.name || groupId}</div>
-
-              {saving ? <div style={savingPill}>Guardando…</div> : null}
-              {!saving && syncPending ? <div style={syncPill}>Sync…</div> : null}
-              {!saving && !syncPending && fromCache ? <div style={offlinePill}>Offline</div> : null}
+          <div className="gs-title-wrap">
+            <div className="gs-title-row">
+              <div className="gs-title-text">{groupMeta?.name || groupId}</div>
+              {saving ? <div className="gs-pill gs-pill-saving">Guardando…</div> : null}
+              {!saving && syncPending ? <div className="gs-pill gs-pill-sync">Sync…</div> : null}
+              {!saving && !syncPending && fromCache ? <div className="gs-pill gs-pill-offline">Offline</div> : null}
             </div>
-            <div style={subText}>{subtitle}</div>
+            <div className="gs-subtitle">{subtitle}</div>
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={() => setScreenshotMode((s) => !s)} style={chipBtn}>
+        <div className="gs-appbar-actions">
+          <button
+            onClick={() => setThemeMode((t) => (t === "dark" ? "light" : "dark"))}
+            className="gs-chip-btn"
+            type="button"
+          >
+            {themeMode === "dark" ? "☀️ Light" : "🌙 Dark"}
+          </button>
+
+          <button
+            onClick={() => setScreenshotMode((s) => !s)}
+            className="gs-chip-btn"
+            type="button"
+          >
             {screenshotMode ? "Normal" : "Screenshot"}
           </button>
-          <button onClick={exportPNG} style={chipBtnPrimary}>
+
+          <button onClick={exportPNG} className="gs-chip-btn gs-chip-btn-primary" type="button">
             Export
           </button>
         </div>
       </div>
 
-      {/* Content */}
-      <div style={content}>
-        {/* CAPTURE AREA (para png) */}
+      <div className="gs-content">
         <div ref={captureRef}>
-          {/* Scorecard PRIMERO (siempre visible) */}
-          <section style={section}>
-            <div style={sectionHead}>
-              <div style={sectionTitle}>Scorecard</div>
+          <section className="gs-section">
+            <div className="gs-section-head">
+              <div className="gs-section-title">Scorecard</div>
               {!screenshotMode ? (
-                <button onClick={addPlayer} disabled={players.length >= 6} style={smallPrimaryBtn}>
+                <button onClick={addPlayer} disabled={players.length >= 6} className="gs-btn-primary" type="button">
                   + Jugador
                 </button>
               ) : null}
             </div>
 
-            {/* Score table */}
-            <div ref={tableWrapRef} style={tableWrap} onScroll={onTableScroll}>
-              <table style={table}>
+            <div ref={tableWrapRef} className="gs-table-wrap" onScroll={onTableScroll}>
+              <table className="gs-table">
                 <thead>
                   <tr>
-                    <th style={{ ...thSticky, minWidth: stickyW, width: stickyW }}>Jugador</th>
+                    <th className="gs-th gs-th-sticky" style={{ minWidth: stickyW, width: stickyW }}>
+                      Jugador
+                    </th>
 
                     {Array.from({ length: 9 }).map((_, i) => (
-                      <th key={`h-${i}`} style={th}>
+                      <th key={`h-${i}`} className="gs-th">
                         {i + 1}
                       </th>
                     ))}
-                    <th style={thStrong}>F9</th>
+                    <th className="gs-th gs-th-strong">F9</th>
 
                     {Array.from({ length: 9 }).map((_, i) => (
-                      <th key={`h2-${i}`} style={th}>
+                      <th key={`h2-${i}`} className="gs-th">
                         {i + 10}
                       </th>
                     ))}
-                    <th style={thStrong}>B9</th>
+                    <th className="gs-th gs-th-strong">B9</th>
 
-                    <th style={thStrong}>Tot</th>
-                    <th style={thMuted}>Net</th>
-                    <th style={thMuted}>STB</th>
+                    <th className="gs-th gs-th-strong">Tot</th>
+                    <th className="gs-th gs-th-muted">Net</th>
+                    <th className="gs-th gs-th-muted">STB</th>
                   </tr>
 
                   <tr>
-                    <th style={{ ...thStickySmall, minWidth: stickyW, width: stickyW }}>Hcp</th>
+                    <th className="gs-th gs-th-muted gs-th-sticky" style={{ minWidth: stickyW, width: stickyW }}>
+                      Hcp
+                    </th>
 
                     {course.parValues.slice(0, 9).map((p, i) => (
-                      <th key={`pf-${i}`} style={thMuted}>
+                      <th key={`pf-${i}`} className="gs-th gs-th-muted">
                         Par {p}
                       </th>
                     ))}
-                    <th style={thMuted}></th>
+                    <th className="gs-th gs-th-muted"></th>
 
                     {course.parValues.slice(9).map((p, i) => (
-                      <th key={`pb-${i}`} style={thMuted}>
+                      <th key={`pb-${i}`} className="gs-th gs-th-muted">
                         Par {p}
                       </th>
                     ))}
-                    <th style={thMuted}></th>
+                    <th className="gs-th gs-th-muted"></th>
 
-                    <th style={thMuted}></th>
-                    <th style={thMuted}></th>
-                    <th style={thMuted}></th>
+                    <th className="gs-th gs-th-muted"></th>
+                    <th className="gs-th gs-th-muted"></th>
+                    <th className="gs-th gs-th-muted"></th>
                   </tr>
                 </thead>
 
@@ -601,42 +713,52 @@ export default function GroupScorecard() {
                     const effHcp = Math.round((p.hcp || 0) * (Number(hcpPercent) / 100));
 
                     return (
-                      <tr key={p.id} style={tr}>
-                        <td style={{ ...tdSticky, minWidth: stickyW, width: stickyW }}>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <tr key={p.id}>
+                        <td className="gs-td gs-td-sticky" style={{ minWidth: stickyW, width: stickyW }}>
+                          <div className="gs-player-box">
                             <input
                               defaultValue={p.name}
                               onBlur={(e) => updatePlayer(p.id, "name", e.target.value)}
-                              style={{ ...inputName, padding: stickyCompact ? "8px 9px" : inputName.padding }}
+                              className="gs-input gs-input-name"
                               disabled={screenshotMode}
                             />
 
-                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                            <div className="gs-player-meta">
                               <input
                                 type="text"
                                 inputMode="decimal"
                                 defaultValue={String(p.hcp ?? 0)}
                                 onChange={(e) => {
-                                  // keep field numeric as user types
                                   e.target.value = sanitizeSignedNumberStr(e.target.value);
                                 }}
                                 onBlur={(e) => updatePlayer(p.id, "hcp", toSignedNumber(e.target.value, 0))}
-                                style={{ ...inputHcp, width: stickyCompact ? 70 : inputHcp.width }}
+                                className="gs-input gs-input-hcp"
                                 disabled={screenshotMode}
                               />
 
                               {!stickyCompact ? (
-                                <span style={effText}>
-                                  eff {hcpPercent}%: <b style={{ color: "white" }}>{effHcp}</b>
+                                <span className="gs-eff-text">
+                                  eff {hcpPercent}%: <b>{effHcp}</b>
                                 </span>
                               ) : null}
+                            </div>
 
-                              {!screenshotMode ? (
-                                <button onClick={() => removePlayer(p.id)} style={smallDangerBtn}>
+                            {!screenshotMode ? (
+                              <div className="gs-player-flags">
+                                <label className="gs-check-pill">
+                                  <input
+                                    type="checkbox"
+                                    checked={p.bonusesEnabled !== false}
+                                    onChange={(e) => togglePlayerBonuses(p.id, e.target.checked)}
+                                  />
+                                  <span>Bonus</span>
+                                </label>
+
+                                <button onClick={() => removePlayer(p.id)} className="gs-btn-danger" type="button">
                                   {stickyCompact ? "✕" : "Quitar"}
                                 </button>
-                              ) : null}
-                            </div>
+                              </div>
+                            ) : null}
                           </div>
                         </td>
 
@@ -644,54 +766,54 @@ export default function GroupScorecard() {
                           const shown = editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : arr[h] ?? "";
                           const cat = scoreCategory(shown, course.parValues[h]);
                           return (
-                            <td key={`sf-${p.id}-${h}`} style={td}>
+                            <td key={`sf-${p.id}-${h}`} className="gs-td">
                               <input
                                 inputMode="numeric"
                                 pattern="[0-9]*"
                                 value={shown}
                                 onChange={(e) => onScoreChange(p.id, h, e.target.value)}
                                 onBlur={() => onScoreBlur(p.id, h)}
-                                style={{ ...inputScore, ...scoreStyleDark(cat) }}
+                                className={`gs-input gs-score-input ${scoreStyleClass(cat)} ${shown ? "filled" : "empty"}`}
                                 disabled={screenshotMode}
                               />
                             </td>
                           );
                         })}
-                        <td style={tdStrong}>{grossF9 || ""}</td>
+                        <td className="gs-td gs-td-strong">{grossF9 || ""}</td>
 
                         {Array.from({ length: 9 }).map((_, i) => {
                           const h = i + 9;
                           const shown = editingScores?.[p.id]?.[h] !== undefined ? editingScores[p.id][h] : arr[h] ?? "";
                           const cat = scoreCategory(shown, course.parValues[h]);
                           return (
-                            <td key={`sb-${p.id}-${h}`} style={td}>
+                            <td key={`sb-${p.id}-${h}`} className="gs-td">
                               <input
                                 inputMode="numeric"
                                 pattern="[0-9]*"
                                 value={shown}
                                 onChange={(e) => onScoreChange(p.id, h, e.target.value)}
                                 onBlur={() => onScoreBlur(p.id, h)}
-                                style={{ ...inputScore, ...scoreStyleDark(cat) }}
+                                className={`gs-input gs-score-input ${scoreStyleClass(cat)} ${shown ? "filled" : "empty"}`}
                                 disabled={screenshotMode}
                               />
                             </td>
                           );
                         })}
-                        <td style={tdStrong}>{grossB9 || ""}</td>
+                        <td className="gs-td gs-td-strong">{grossB9 || ""}</td>
 
-                        <td style={tdStrong}>{grossT || ""}</td>
-                        <td style={tdMutedCell}>{netT || ""}</td>
-                        <td style={tdMutedCell}>{stbT || ""}</td>
+                        <td className="gs-td gs-td-strong">{grossT || ""}</td>
+                        <td className="gs-td gs-td-muted-cell">{netT || ""}</td>
+                        <td className="gs-td gs-td-muted-cell">{stbT || ""}</td>
                       </tr>
                     );
                   })}
 
                   {players.length === 0 ? (
                     <tr>
-                      <td style={{ ...tdSticky, padding: 14, minWidth: stickyW, width: stickyW }} colSpan={1}>
-                        <div style={{ opacity: 0.8, fontWeight: 800 }}>Agrega jugadores para empezar.</div>
+                      <td className="gs-td gs-td-sticky" style={{ padding: 14, minWidth: stickyW, width: stickyW }}>
+                        <div className="gs-empty-state">Agrega jugadores para empezar.</div>
                       </td>
-                      <td style={{ padding: 14 }} colSpan={22}></td>
+                      <td className="gs-td" style={{ padding: 14 }} colSpan={22}></td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -699,16 +821,15 @@ export default function GroupScorecard() {
             </div>
           </section>
 
-          {/* COLLAPSABLES (no estorban el scorecard) */}
           {!screenshotMode ? (
             <>
               <Collapsible
                 title="Ajustes del grupo"
-                subtitle="Pagos Birdie/Eagle/Alb/Greens"
+                subtitle="Pagos + carry del match total"
                 open={openPayouts}
                 setOpen={setOpenPayouts}
               >
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                <div className="gs-grid-2">
                   <PayoutInputDark
                     label="Birdie"
                     value={groupSettings.birdiePay ?? 0}
@@ -731,8 +852,34 @@ export default function GroupScorecard() {
                   />
                 </div>
 
-                <div style={hint}>
-                  Estos pagos se usan para calcular <b>bonus</b> y <b>greens</b> dentro del grupo.
+                <div className="gs-grid-2" style={{ marginTop: 12 }}>
+                  <label className="gs-toggle-card">
+                    <input
+                      type="checkbox"
+                      checked={!!groupSettings.carryF9ToTotal}
+                      onChange={(e) => updateGroupToggle("carryF9ToTotal", e.target.checked)}
+                    />
+                    <div>
+                      <div className="gs-toggle-title">Carry F9 → Total</div>
+                      <div className="gs-toggle-sub">Si F9 queda AS, no afecta. Si no queda AS, se arrastra al total.</div>
+                    </div>
+                  </label>
+
+                  <label className="gs-toggle-card">
+                    <input
+                      type="checkbox"
+                      checked={!!groupSettings.carryB9ToTotal}
+                      onChange={(e) => updateGroupToggle("carryB9ToTotal", e.target.checked)}
+                    />
+                    <div>
+                      <div className="gs-toggle-title">Carry B9 → Total</div>
+                      <div className="gs-toggle-sub">Misma lógica para la vuelta del 10–18.</div>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="gs-hint">
+                  “Bonus” por jugador te deja excluirlo de birdies/eagles/albatross sin quitarlo del grupo.
                 </div>
               </Collapsible>
 
@@ -744,11 +891,11 @@ export default function GroupScorecard() {
               >
                 {bolaRosaEnabled ? (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={label}>Bola Rosa</div>
+                    <div className="gs-label">Bola Rosa</div>
                     <select
                       value={bolaRosa}
                       onChange={(e) => setBolaRosa(e.target.value)}
-                      style={selectDark}
+                      className="gs-input gs-select"
                       disabled={players.length === 0}
                     >
                       <option value="">— Sin ganador —</option>
@@ -762,16 +909,16 @@ export default function GroupScorecard() {
                 ) : null}
 
                 {players.length < 2 ? (
-                  <div style={{ opacity: 0.78 }}>Agrega al menos 2 jugadores para seleccionar ganadores.</div>
+                  <div className="gs-soft-text">Agrega al menos 2 jugadores para seleccionar ganadores.</div>
                 ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                  <div className="gs-grid-2">
                     {par3Holes.map((holeNumber) => (
-                      <div key={holeNumber} style={cardDark}>
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Hoyo {holeNumber}</div>
+                      <div key={holeNumber} className="gs-card-dark">
+                        <div className="gs-card-title">Hoyo {holeNumber}</div>
                         <select
                           value={greens[String(holeNumber)] || ""}
                           onChange={(e) => setGreenWinner(holeNumber, e.target.value)}
-                          style={selectDark}
+                          className="gs-input gs-select"
                         >
                           <option value="">— Sin ganador —</option>
                           {players.map((p) => (
@@ -780,7 +927,7 @@ export default function GroupScorecard() {
                             </option>
                           ))}
                         </select>
-                        <div style={hintSmall}>
+                        <div className="gs-hint-small">
                           El ganador cobra <b>${groupSettings.greensPay}</b> a cada jugador del grupo.
                         </div>
                       </div>
@@ -791,20 +938,22 @@ export default function GroupScorecard() {
 
               <Collapsible
                 title="Matches"
-                subtitle={`Bet default $${DEFAULT_BET_AMOUNT} + Doblada F9/B9 · mostramos solo $Total`}
+                subtitle={`Bet default $${DEFAULT_BET_AMOUNT} · color por F9/B9/Total · mostramos solo $Total`}
                 open={openMatches}
                 setOpen={setOpenMatches}
               >
                 {players.length < 2 ? (
-                  <div style={{ opacity: 0.78 }}>Agrega al menos 2 jugadores.</div>
+                  <div className="gs-soft-text">Agrega al menos 2 jugadores.</div>
                 ) : (
-                  <div style={{ display: "grid", gap: 12 }}>
+                  <div className="gs-stack">
                     {matchesList.map((m) => (
                       <MatchCardDark
                         key={m.key}
                         m={m}
+                        allowManualMatchDiffs={allowManualMatchDiffs}
                         onBet={(raw) => setBetAmount(m.a.id, m.b.id, raw)}
                         onDbl={(seg, checked) => toggleDoblada(m.a.id, m.b.id, seg, checked)}
+                        onManualDiff={(raw) => setManualDiff(m.a.id, m.b.id, raw)}
                       />
                     ))}
                   </div>
@@ -818,21 +967,19 @@ export default function GroupScorecard() {
                 setOpen={setOpenTotals}
               >
                 {players.length === 0 ? (
-                  <div style={{ opacity: 0.78 }}>Agrega jugadores.</div>
+                  <div className="gs-soft-text">Agrega jugadores.</div>
                 ) : (
-                  <div style={totalsList}>
+                  <div className="gs-totals-list">
                     {moneyRows.map((r) => {
-                      const color = r.total > 0 ? "#22c55e" : r.total < 0 ? "#ef4444" : "#e5e7eb";
+                      const moneyClass = r.total > 0 ? "money-pos" : r.total < 0 ? "money-neg" : "money-even";
                       return (
-                        <div key={r.id} style={totalRow}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                            <div style={{ fontWeight: 900, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {r.name}
-                            </div>
-                            <div style={{ fontWeight: 1000, color }}>{fmtMoney(r.total)}</div>
+                        <div key={r.id} className="gs-total-row">
+                          <div className="gs-total-row-top">
+                            <div className="gs-total-name">{r.name}</div>
+                            <div className={`gs-total-money ${moneyClass}`}>{fmtMoney(r.total)}</div>
                           </div>
 
-                          <div style={miniGrid}>
+                          <div className="gs-mini-grid">
                             <MiniStat label="Matches" value={fmtMoney(r.matches)} />
                             <MiniStat label="Greens" value={fmtMoney(r.greens)} />
                             <MiniStat label="Bonus" value={fmtMoney(r.bonus)} />
@@ -855,42 +1002,47 @@ export default function GroupScorecard() {
 
 function Collapsible({ title, subtitle, open, setOpen, children }) {
   return (
-    <section style={{ ...section, marginTop: 12 }}>
-      <button onClick={() => setOpen(!open)} style={collapsibleHead}>
-        <div style={{ minWidth: 0 }}>
-          <div style={sectionTitle}>{title}</div>
-          {subtitle ? <div style={subText2}>{subtitle}</div> : null}
+    <section className="gs-section gs-mt-12">
+      <button onClick={() => setOpen(!open)} className="gs-collapsible-head" type="button">
+        <div className="gs-collapsible-copy">
+          <div className="gs-section-title">{title}</div>
+          {subtitle ? <div className="gs-section-sub">{subtitle}</div> : null}
         </div>
-        <div style={chev}>{open ? "▾" : "▸"}</div>
+        <div className="gs-chevron">{open ? "▾" : "▸"}</div>
       </button>
-
-      {open ? <div style={collapsibleBody}>{children}</div> : null}
+      {open ? <div className="gs-collapsible-body">{children}</div> : null}
     </section>
   );
 }
 
-function MatchCardDark({ m, onBet, onDbl }) {
-  const aWins = m.pairRes.total > 0;
-  const bWins = m.pairRes.total < 0;
-  const accent = aWins ? "#22c55e" : bWins ? "#ef4444" : "#94a3b8";
+function MatchCardDark({ m, onBet, onDbl, allowManualMatchDiffs, onManualDiff }) {
+  const frontClass = segmentColorClass(m.pairRes.front);
+  const backClass = segmentColorClass(m.pairRes.back);
+  const totalClass = segmentColorClass(m.pairRes.total);
+  const totalMoneyClass =
+    m.money.moneyTotal > 0 ? "money-pos" : m.money.moneyTotal < 0 ? "money-neg" : "money-even";
 
   return (
-    <div style={matchCardDark}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 950, fontSize: 15, lineHeight: 1.15 }}>
-            <span style={{ color: "white" }}>{m.a.name}</span>{" "}
-            <span style={{ opacity: 0.55, fontWeight: 900 }}>vs</span>{" "}
-            <span style={{ color: "white" }}>{m.b.name}</span>
+    <div className="gs-match-card">
+      <div className="gs-match-top">
+        <div className="gs-match-copy">
+          <div className="gs-match-title">
+            <span>{m.a.name}</span> <span className="gs-vs">vs</span> <span>{m.b.name}</span>
           </div>
-          <div style={hintSmall}>
-            diff HCP: <b style={{ color: "white" }}>{m.pairRes.diff}</b>
+          <div className="gs-hint-small">
+            diff HCP auto: <b>{m.pairRes.diff}</b>
+            {allowManualMatchDiffs && m.manualDiff !== undefined && m.manualDiff !== null ? (
+              <>
+                {" "}
+                · manual: <b>{m.manualDiff}</b>
+              </>
+            ) : null}
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={miniFieldDark}>
-            <div style={miniLabel}>Bet</div>
+        <div className="gs-match-side">
+          <div className="gs-mini-field">
+            <div className="gs-mini-label">Bet</div>
             <input
               type="text"
               inputMode="numeric"
@@ -899,41 +1051,63 @@ function MatchCardDark({ m, onBet, onDbl }) {
                 e.target.value = sanitizeNonNegIntStr(e.target.value);
               }}
               onBlur={(e) => onBet(e.target.value)}
-              style={miniInputDark}
+              className="gs-input gs-mini-input"
             />
           </div>
+
+          {allowManualMatchDiffs ? (
+            <div className="gs-mini-field">
+              <div className="gs-mini-label">Ventaja manual</div>
+              <input
+                type="text"
+                inputMode="decimal"
+                defaultValue={m.manualDiff ?? ""}
+                onChange={(e) => {
+                  e.target.value = sanitizeSignedNumberStr(e.target.value);
+                }}
+                onBlur={(e) => onManualDiff(e.target.value)}
+                className="gs-input gs-mini-input"
+                placeholder="auto"
+              />
+            </div>
+          ) : (
+            <div className="gs-mini-field gs-mini-field-locked">
+              <div className="gs-mini-label">Ventaja</div>
+              <div className="gs-locked-text">Auto</div>
+            </div>
+          )}
         </div>
       </div>
 
-      <div style={toggleRow}>
-        <label style={checkPillDark}>
+      <div className="gs-toggle-row">
+        <label className="gs-check-pill">
           <input type="checkbox" checked={!!m.dbl.f9} onChange={(e) => onDbl("f9", e.target.checked)} />
-          <span style={{ fontWeight: 900 }}>Doblada F9</span>
+          <span>Doblada F9</span>
         </label>
 
-        <label style={checkPillDark}>
+        <label className="gs-check-pill">
           <input type="checkbox" checked={!!m.dbl.b9} onChange={(e) => onDbl("b9", e.target.checked)} />
-          <span style={{ fontWeight: 900 }}>Doblada B9</span>
+          <span>Doblada B9</span>
         </label>
       </div>
 
-      <div style={scoreStripWrapDark}>
-        <div style={scoreStripHeadDark}>
-          <div style={scoreStripH}>F9</div>
-          <div style={scoreStripH}>B9</div>
-          <div style={scoreStripH}>Total</div>
+      <div className="gs-strip">
+        <div className="gs-strip-head">
+          <div>F9</div>
+          <div>B9</div>
+          <div>Total</div>
         </div>
 
-        <div style={scoreStripBodyDark}>
-          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.front)}</div>
-          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.back)}</div>
-          <div style={{ ...scoreStripV, color: accent }}>{fmtMatch(m.pairRes.total)}</div>
+        <div className="gs-strip-body">
+          <div className={`gs-strip-val ${frontClass}`}>{fmtMatch(m.pairRes.front)}</div>
+          <div className={`gs-strip-val ${backClass}`}>{fmtMatch(m.pairRes.back)}</div>
+          <div className={`gs-strip-val ${totalClass}`}>{fmtMatch(m.pairRes.total)}</div>
         </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
-        <div style={{ ...moneyPillDark, borderColor: accent, color: accent }}>
-          {fmtMoney(m.money.moneyTotal)} <span style={{ opacity: 0.75, fontWeight: 900 }}>total</span>
+      <div className="gs-match-money-wrap">
+        <div className={`gs-money-pill ${totalMoneyClass}`}>
+          {fmtMoney(m.money.moneyTotal)} <span>total</span>
         </div>
       </div>
     </div>
@@ -942,8 +1116,8 @@ function MatchCardDark({ m, onBet, onDbl }) {
 
 function PayoutInputDark({ label, value, onBlur }) {
   return (
-    <div style={pillDark}>
-      <div style={pillLabelDark}>{label}</div>
+    <div className="gs-pill-dark">
+      <div className="gs-pill-label">{label}</div>
       <input
         type="text"
         inputMode="numeric"
@@ -952,7 +1126,7 @@ function PayoutInputDark({ label, value, onBlur }) {
           e.target.value = sanitizeNonNegIntStr(e.target.value);
         }}
         onBlur={(e) => onBlur(e.target.value)}
-        style={pillInputDark}
+        className="gs-input gs-pill-input"
       />
     </div>
   );
@@ -960,434 +1134,812 @@ function PayoutInputDark({ label, value, onBlur }) {
 
 function MiniStat({ label, value }) {
   return (
-    <div style={miniStat}>
-      <div style={{ opacity: 0.75, fontSize: 11, fontWeight: 900 }}>{label}</div>
-      <div style={{ fontWeight: 1000, marginTop: 2 }}>{value}</div>
+    <div className="gs-mini-stat">
+      <div className="gs-mini-stat-label">{label}</div>
+      <div className="gs-mini-stat-value">{value}</div>
     </div>
   );
 }
 
-function scoreStyleDark(cat) {
-  // Dark + subtle accents
-  if (cat === "albatross") return { borderColor: "rgba(255,119,200,0.9)", background: "rgba(255,119,200,0.14)" };
-  if (cat === "eagle") return { borderColor: "rgba(34,197,94,0.9)", background: "rgba(34,197,94,0.14)" };
-  if (cat === "birdie") return { borderColor: "rgba(251,146,60,0.95)", background: "rgba(251,146,60,0.14)" };
-  if (cat === "bogey") return { borderColor: "rgba(96,165,250,0.9)", background: "rgba(96,165,250,0.14)" };
-  if (cat === "double") return { borderColor: "rgba(239,68,68,0.9)", background: "rgba(239,68,68,0.14)" };
-  return {};
+function scoreStyleClass(cat) {
+  if (cat === "albatross") return "score-albatross";
+  if (cat === "eagle") return "score-eagle";
+  if (cat === "birdie") return "score-birdie";
+  if (cat === "bogey") return "score-bogey";
+  if (cat === "double") return "score-double";
+  return "score-none";
 }
 
-/* ---------------- Styles (mobile-first, premium dark) ---------------- */
+/* ---------------- Styles ---------------- */
 
-const baseCss = `
+const styles = `
   * { box-sizing: border-box; }
-  input, button, select { font: inherit; }
-  input:focus, select:focus { outline: none; }
-  table { border-spacing: 0; }
+  .gs-page {
+    min-height: 100%;
+    background: var(--bg-page);
+    color: var(--text-main);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    --radius-xl: 18px;
+    --radius-lg: 16px;
+    --radius-md: 14px;
+    --radius-sm: 12px;
+    --shadow: 0 18px 50px rgba(0,0,0,.22);
+  }
+
+  .gs-page[data-theme="dark"] {
+    --bg-page:
+      radial-gradient(1200px 700px at 10% 0%, rgba(59,130,246,.10) 0%, rgba(0,0,0,0) 45%),
+      #05070b;
+    --bg-panel: linear-gradient(180deg, rgba(15,23,42,.55) 0%, rgba(2,6,23,.35) 100%);
+    --bg-card: rgba(2,6,23,.35);
+    --bg-card-2: rgba(15,23,42,.45);
+    --bg-card-3: rgba(15,23,42,.55);
+    --bg-sticky: rgba(2,6,23,.78);
+    --bg-sticky-head: rgba(2,6,23,.75);
+    --bg-table-strong: rgba(59,130,246,.10);
+    --bg-table-muted: rgba(148,163,184,.06);
+    --border: rgba(148,163,184,.14);
+    --border-soft: rgba(148,163,184,.10);
+    --text-main: #e5e7eb;
+    --text-strong: #ffffff;
+    --text-soft: rgba(226,232,240,.75);
+    --text-soft-2: rgba(226,232,240,.88);
+    --blue: #dbeafe;
+    --blue-bg: rgba(59,130,246,.18);
+    --blue-border: rgba(59,130,246,.35);
+    --danger: #fecaca;
+    --danger-bg: rgba(239,68,68,.12);
+    --danger-border: rgba(239,68,68,.30);
+    --score-border: rgba(255,255,255,.82);
+    --score-border-filled: rgba(148,163,184,.16);
+    --score-bg: rgba(15,23,42,.55);
+  }
+
+  .gs-page[data-theme="light"] {
+    --bg-page:
+      radial-gradient(1100px 600px at 10% 0%, rgba(59,130,246,.10) 0%, rgba(255,255,255,0) 45%),
+      #f3f7fb;
+    --bg-panel: linear-gradient(180deg, rgba(255,255,255,.95) 0%, rgba(248,250,252,.92) 100%);
+    --bg-card: rgba(255,255,255,.90);
+    --bg-card-2: rgba(248,250,252,.94);
+    --bg-card-3: rgba(255,255,255,.96);
+    --bg-sticky: rgba(255,255,255,.96);
+    --bg-sticky-head: rgba(255,255,255,.96);
+    --bg-table-strong: rgba(59,130,246,.10);
+    --bg-table-muted: rgba(148,163,184,.08);
+    --border: rgba(15,23,42,.12);
+    --border-soft: rgba(15,23,42,.08);
+    --text-main: #0f172a;
+    --text-strong: #020617;
+    --text-soft: rgba(15,23,42,.70);
+    --text-soft-2: rgba(15,23,42,.88);
+    --blue: #1d4ed8;
+    --blue-bg: rgba(59,130,246,.12);
+    --blue-border: rgba(59,130,246,.28);
+    --danger: #b91c1c;
+    --danger-bg: rgba(239,68,68,.10);
+    --danger-border: rgba(239,68,68,.20);
+    --score-border: rgba(15,23,42,.45);
+    --score-border-filled: rgba(15,23,42,.16);
+    --score-bg: rgba(255,255,255,.98);
+  }
+
+  .gs-fallback {
+    padding: 20px;
+    min-height: 100vh;
+    background: var(--bg-page);
+    color: var(--text-strong);
+  }
+
+  .gs-content {
+    padding: 12px;
+    padding-top: 10px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .gs-appbar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    backdrop-filter: blur(14px);
+    background: color-mix(in srgb, var(--bg-card-3) 72%, transparent);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .gs-appbar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .gs-title-wrap { min-width: 0; }
+  .gs-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .gs-title-text {
+    font-size: 16px;
+    font-weight: 1000;
+    letter-spacing: -.4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-strong);
+    max-width: 240px;
+  }
+
+  .gs-subtitle {
+    font-size: 12px;
+    opacity: .8;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-soft);
+    max-width: 320px;
+  }
+
+  .gs-appbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .gs-pill {
+    font-size: 11px;
+    font-weight: 900;
+    padding: 6px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .gs-pill-saving {
+    border: 1px solid rgba(59,130,246,.25);
+    background: rgba(59,130,246,.12);
+    color: #bfdbfe;
+  }
+
+  .gs-pill-sync {
+    border: 1px solid rgba(251,146,60,.28);
+    background: rgba(251,146,60,.12);
+    color: #fdba74;
+  }
+
+  .gs-pill-offline {
+    border: 1px solid rgba(148,163,184,.22);
+    background: rgba(148,163,184,.10);
+    color: var(--text-soft-2);
+  }
+
+  .gs-icon-btn,
+  .gs-chip-btn,
+  .gs-chip-btn-primary,
+  .gs-btn-primary,
+  .gs-btn-danger {
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .gs-icon-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-card-3);
+    color: var(--text-strong);
+    font-weight: 1000;
+  }
+
+  .gs-chip-btn {
+    height: 38px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-card-3);
+    color: var(--text-strong);
+    font-weight: 950;
+  }
+
+  .gs-chip-btn-primary,
+  .gs-btn-primary {
+    border: 1px solid var(--blue-border);
+    background: var(--blue-bg);
+    color: var(--blue);
+    font-weight: 950;
+  }
+
+  .gs-chip-btn-primary {
+    height: 38px;
+    padding: 0 12px;
+    border-radius: 999px;
+  }
+
+  .gs-btn-primary {
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .gs-btn-danger {
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--danger-border);
+    background: var(--danger-bg);
+    color: var(--danger);
+    font-weight: 950;
+  }
+
+  .gs-section {
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .gs-mt-12 { margin-top: 12px; }
+
+  .gs-section-head {
+    padding: 12px 12px 10px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .gs-section-title {
+    font-size: 14px;
+    font-weight: 1000;
+    letter-spacing: -.2px;
+    color: var(--text-strong);
+  }
+
+  .gs-section-sub {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--text-soft);
+  }
+
+  .gs-collapsible-head {
+    width: 100%;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: transparent;
+    color: var(--text-main);
+    border: none;
+    text-align: left;
+  }
+
+  .gs-collapsible-copy { min-width: 0; }
+  .gs-chevron {
+    font-size: 18px;
+    opacity: .8;
+    font-weight: 900;
+    color: var(--text-soft);
+  }
+
+  .gs-collapsible-body {
+    padding: 12px;
+    padding-top: 0;
+  }
+
+  .gs-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .gs-table {
+    width: 100%;
+    min-width: 1080px;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .gs-th,
+  .gs-td {
+    padding: 8px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .gs-th {
+    font-size: 12px;
+    font-weight: 900;
+    color: var(--text-soft-2);
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .gs-th-muted {
+    opacity: .72;
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  .gs-th-strong {
+    background: var(--bg-table-strong);
+    color: var(--blue);
+  }
+
+  .gs-th-sticky {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    text-align: left;
+    background: var(--bg-sticky-head);
+    backdrop-filter: blur(10px);
+  }
+
+  .gs-td {
+    background: color-mix(in srgb, var(--bg-card-2) 92%, transparent);
+    color: var(--text-main);
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .gs-td-sticky {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    text-align: left;
+    background: var(--bg-sticky);
+    backdrop-filter: blur(10px);
+  }
+
+  .gs-td-strong {
+    font-weight: 1000;
+    background: var(--bg-table-strong);
+    color: var(--blue);
+  }
+
+  .gs-td-muted-cell {
+    opacity: .96;
+    background: var(--bg-table-muted);
+    font-weight: 1000;
+  }
+
+  .gs-player-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .gs-player-meta,
+  .gs-player-flags {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .gs-eff-text {
+    font-size: 12px;
+    color: var(--text-soft);
+    font-weight: 900;
+  }
+
+  .gs-eff-text b {
+    color: var(--text-strong);
+  }
+
+  .gs-input {
+    font: inherit;
+    outline: none;
+  }
+
+  .gs-input-name,
+  .gs-input-hcp,
+  .gs-select,
+  .gs-pill-input,
+  .gs-mini-input {
+    border: 1px solid var(--border);
+    background: var(--bg-card-3);
+    color: var(--text-strong);
+  }
+
+  .gs-input-name {
+    width: 100%;
+    padding: 10px;
+    border-radius: 12px;
+    font-weight: 950;
+  }
+
+  .gs-input-hcp {
+    width: 80px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    font-weight: 900;
+  }
+
+  .gs-score-input {
+    width: 42px;
+    height: 42px;
+    padding: 8px 6px;
+    border-radius: 12px;
+    text-align: center;
+    font-weight: 1000;
+    background: var(--score-bg);
+    color: var(--text-strong);
+  }
+
+  .gs-score-input.empty {
+    border: 1.5px solid var(--score-border);
+  }
+
+  .gs-score-input.filled {
+    border: 1.5px solid var(--score-border-filled);
+  }
+
+  .score-none {}
+  .score-albatross { border-color: rgba(255,119,200,.90) !important; background: rgba(255,119,200,.14) !important; }
+  .score-eagle { border-color: rgba(34,197,94,.90) !important; background: rgba(34,197,94,.14) !important; }
+  .score-birdie { border-color: rgba(251,146,60,.95) !important; background: rgba(251,146,60,.14) !important; }
+  .score-bogey { border-color: rgba(96,165,250,.90) !important; background: rgba(96,165,250,.14) !important; }
+  .score-double { border-color: rgba(239,68,68,.90) !important; background: rgba(239,68,68,.14) !important; }
+
+  .gs-empty-state {
+    opacity: .82;
+    font-weight: 800;
+    color: var(--text-soft-2);
+  }
+
+  .gs-grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .gs-pill-dark,
+  .gs-card-dark,
+  .gs-match-card,
+  .gs-total-row,
+  .gs-mini-stat,
+  .gs-mini-field,
+  .gs-toggle-card {
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+  }
+
+  .gs-pill-dark {
+    padding: 10px 12px;
+    border-radius: 16px;
+  }
+
+  .gs-pill-label {
+    opacity: .78;
+    font-size: 12px;
+    font-weight: 950;
+    color: var(--text-soft);
+  }
+
+  .gs-pill-input {
+    margin-top: 6px;
+    width: 100%;
+    padding: 12px 10px;
+    border-radius: 12px;
+    text-align: center;
+    font-weight: 1000;
+  }
+
+  .gs-toggle-card {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .gs-toggle-title {
+    font-weight: 950;
+    color: var(--text-strong);
+  }
+
+  .gs-toggle-sub {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-soft);
+  }
+
+  .gs-label {
+    font-weight: 950;
+    margin-bottom: 6px;
+    color: var(--text-strong);
+  }
+
+  .gs-select {
+    padding: 12px;
+    border-radius: 14px;
+    width: 100%;
+    font-weight: 950;
+  }
+
+  .gs-card-dark {
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .gs-card-title {
+    font-weight: 900;
+    margin-bottom: 8px;
+    color: var(--text-strong);
+  }
+
+  .gs-hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text-soft);
+    border-top: 1px solid var(--border-soft);
+    padding-top: 10px;
+  }
+
+  .gs-hint-small {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-soft);
+  }
+
+  .gs-soft-text {
+    opacity: .82;
+    color: var(--text-soft-2);
+  }
+
+  .gs-stack,
+  .gs-totals-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .gs-match-card {
+    border-radius: 18px;
+    padding: 12px;
+  }
+
+  .gs-match-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .gs-match-copy {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .gs-match-title {
+    font-weight: 950;
+    font-size: 15px;
+    line-height: 1.15;
+    color: var(--text-strong);
+  }
+
+  .gs-vs {
+    opacity: .55;
+    font-weight: 900;
+    color: var(--text-soft);
+  }
+
+  .gs-match-side {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .gs-mini-field {
+    min-width: 120px;
+    border-radius: 14px;
+    padding: 10px 12px;
+  }
+
+  .gs-mini-field-locked {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .gs-mini-label {
+    font-size: 12px;
+    font-weight: 950;
+    opacity: .75;
+    color: var(--text-soft);
+  }
+
+  .gs-mini-input {
+    margin-top: 6px;
+    width: 100%;
+    padding: 10px 10px;
+    border-radius: 12px;
+    text-align: center;
+    font-weight: 1000;
+  }
+
+  .gs-locked-text {
+    margin-top: 8px;
+    font-weight: 1000;
+    color: var(--text-strong);
+  }
+
+  .gs-toggle-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+
+  .gs-check-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-card-2);
+    user-select: none;
+    color: var(--text-strong);
+    font-weight: 900;
+  }
+
+  .gs-strip {
+    margin-top: 12px;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .gs-strip-head,
+  .gs-strip-body {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .gs-strip-head {
+    background: var(--bg-card-3);
+  }
+
+  .gs-strip-body {
+    background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+  }
+
+  .gs-strip-head > div {
+    padding: 10px;
+    text-align: center;
+    font-weight: 950;
+    opacity: .9;
+    color: var(--text-soft-2);
+  }
+
+  .gs-strip-val {
+    padding: 14px 10px;
+    text-align: center;
+    font-weight: 1000;
+    font-size: 22px;
+    letter-spacing: -.6px;
+  }
+
+  .seg-pos { color: #22c55e; }
+  .seg-neg { color: #ef4444; }
+  .seg-as { color: var(--text-soft-2); }
+
+  .gs-match-money-wrap {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
+  }
+
+  .gs-money-pill {
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 2px solid var(--border);
+    background: var(--bg-card-2);
+    font-weight: 1000;
+  }
+
+  .gs-money-pill span {
+    opacity: .75;
+    font-weight: 900;
+  }
+
+  .money-pos { color: #22c55e; }
+  .money-neg { color: #ef4444; }
+  .money-even { color: var(--text-soft-2); }
+
+  .gs-total-row {
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .gs-total-row-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .gs-total-name {
+    font-weight: 900;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-strong);
+  }
+
+  .gs-total-money {
+    font-weight: 1000;
+  }
+
+  .gs-mini-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0,1fr));
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .gs-mini-stat {
+    border-radius: 14px;
+    padding: 10px;
+  }
+
+  .gs-mini-stat-label {
+    opacity: .75;
+    font-size: 11px;
+    font-weight: 900;
+    color: var(--text-soft);
+  }
+
+  .gs-mini-stat-value {
+    font-weight: 1000;
+    margin-top: 2px;
+    color: var(--text-strong);
+  }
+
+  @media (max-width: 860px) {
+    .gs-grid-2 {
+      grid-template-columns: 1fr;
+    }
+
+    .gs-title-text {
+      max-width: 150px;
+    }
+
+    .gs-subtitle {
+      max-width: 180px;
+    }
+
+    .gs-appbar {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .gs-appbar-actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .gs-match-side {
+      width: 100%;
+    }
+
+    .gs-mini-field {
+      flex: 1 1 140px;
+    }
+  }
 `;
-
-const page = {
-  minHeight: "100%",
-  background: "radial-gradient(1200px 700px at 10% 0%, rgba(59,130,246,0.10) 0%, rgba(0,0,0,0) 45%), #05070b",
-  color: "#e5e7eb",
-  paddingTop: "env(safe-area-inset-top)",
-  paddingBottom: "env(safe-area-inset-bottom)",
-  paddingLeft: "env(safe-area-inset-left)",
-  paddingRight: "env(safe-area-inset-right)",
-};
-
-const content = {
-  padding: 12,
-  paddingTop: 10,
-  maxWidth: 1100,
-  margin: "0 auto",
-};
-
-const fallback = { padding: 20, color: "white", background: "#05070b", minHeight: "100vh" };
-
-const appBar = {
-  position: "sticky",
-  top: 0,
-  zIndex: 50,
-  padding: "10px 12px",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 10,
-  backdropFilter: "blur(14px)",
-  background: "rgba(5,7,11,0.70)",
-  borderBottom: "1px solid rgba(148,163,184,0.14)",
-};
-
-const titleRow = { display: "flex", alignItems: "center", gap: 10, minWidth: 0 };
-const titleText = {
-  fontSize: 16,
-  fontWeight: 1000,
-  letterSpacing: -0.4,
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  maxWidth: 220,
-};
-const subText = { fontSize: 12, opacity: 0.75, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-
-const savingPill = {
-  fontSize: 11,
-  fontWeight: 900,
-  padding: "6px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(59,130,246,0.25)",
-  background: "rgba(59,130,246,0.12)",
-  color: "#bfdbfe",
-};
-
-const syncPill = {
-  fontSize: 11,
-  fontWeight: 900,
-  padding: "6px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(251,146,60,0.28)",
-  background: "rgba(251,146,60,0.12)",
-  color: "#fed7aa",
-};
-
-const offlinePill = {
-  fontSize: 11,
-  fontWeight: 900,
-  padding: "6px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(148,163,184,0.22)",
-  background: "rgba(148,163,184,0.10)",
-  color: "rgba(226,232,240,0.92)",
-};
-
-const iconBtn = {
-  width: 38,
-  height: 38,
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.18)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  fontWeight: 1000,
-};
-
-const chipBtn = {
-  height: 38,
-  padding: "0 12px",
-  borderRadius: 999,
-  border: "1px solid rgba(148,163,184,0.18)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  fontWeight: 950,
-};
-
-const chipBtnPrimary = {
-  ...chipBtn,
-  border: "1px solid rgba(59,130,246,0.35)",
-  background: "rgba(59,130,246,0.18)",
-  color: "#dbeafe",
-};
-
-const section = {
-  borderRadius: 18,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "linear-gradient(180deg, rgba(15,23,42,0.55) 0%, rgba(2,6,23,0.35) 100%)",
-  boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
-  overflow: "hidden",
-};
-
-const sectionHead = {
-  padding: "12px 12px 10px 12px",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 10,
-  borderBottom: "1px solid rgba(148,163,184,0.12)",
-};
-
-const sectionTitle = { fontSize: 14, fontWeight: 1000, letterSpacing: -0.2, color: "white" };
-const subText2 = { marginTop: 2, fontSize: 12, opacity: 0.72 };
-
-const smallPrimaryBtn = {
-  padding: "8px 10px",
-  borderRadius: 12,
-  border: "1px solid rgba(59,130,246,0.35)",
-  background: "rgba(59,130,246,0.18)",
-  color: "#dbeafe",
-  fontWeight: 950,
-};
-
-const smallDangerBtn = {
-  padding: "8px 10px",
-  borderRadius: 12,
-  border: "1px solid rgba(239,68,68,0.30)",
-  background: "rgba(239,68,68,0.12)",
-  color: "#fecaca",
-  fontWeight: 950,
-};
-
-const collapsibleHead = {
-  width: "100%",
-  padding: "12px 12px 12px 12px",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 10,
-  background: "transparent",
-  color: "#e5e7eb",
-  border: "none",
-  textAlign: "left",
-};
-
-const chev = { fontSize: 18, opacity: 0.8, fontWeight: 900 };
-const collapsibleBody = { padding: 12, paddingTop: 0 };
-
-const tableWrap = { overflowX: "auto", WebkitOverflowScrolling: "touch" };
-
-const table = {
-  width: "100%",
-  minWidth: 980,
-  borderCollapse: "separate",
-  borderSpacing: 0,
-};
-
-const th = {
-  textAlign: "center",
-  padding: 8,
-  fontSize: 12,
-  color: "rgba(226,232,240,0.85)",
-  fontWeight: 900,
-  background: "rgba(2,6,23,0.35)",
-  borderBottom: "1px solid rgba(148,163,184,0.12)",
-  whiteSpace: "nowrap",
-};
-
-const thMuted = { ...th, opacity: 0.65, fontWeight: 800, fontSize: 11 };
-const thStrong = { ...th, color: "#dbeafe", background: "rgba(59,130,246,0.10)" };
-
-const thSticky = {
-  ...th,
-  position: "sticky",
-  left: 0,
-  zIndex: 2,
-  textAlign: "left",
-  background: "rgba(2,6,23,0.75)",
-  backdropFilter: "blur(10px)",
-};
-
-const thStickySmall = {
-  ...thMuted,
-  position: "sticky",
-  left: 0,
-  zIndex: 2,
-  textAlign: "left",
-  background: "rgba(2,6,23,0.75)",
-  backdropFilter: "blur(10px)",
-};
-
-const tr = { borderTop: "1px solid rgba(148,163,184,0.10)" };
-
-const td = {
-  padding: 8,
-  textAlign: "center",
-  background: "rgba(15,23,42,0.20)",
-  color: "#e5e7eb",
-  borderBottom: "1px solid rgba(148,163,184,0.08)",
-};
-
-const tdSticky = {
-  ...td,
-  position: "sticky",
-  left: 0,
-  zIndex: 1,
-  textAlign: "left",
-  background: "rgba(2,6,23,0.78)",
-  backdropFilter: "blur(10px)",
-};
-
-const tdStrong = { ...td, fontWeight: 1000, background: "rgba(59,130,246,0.10)", color: "#dbeafe" };
-const tdMutedCell = { ...td, opacity: 0.95, background: "rgba(148,163,184,0.06)", fontWeight: 1000 };
-
-const inputName = {
-  width: "100%",
-  padding: "10px 10px",
-  borderRadius: 12,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  fontWeight: 950,
-};
-
-const inputHcp = {
-  width: 80,
-  padding: "8px 10px",
-  borderRadius: 12,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  fontWeight: 900,
-};
-
-const inputScore = {
-  width: 42,
-  height: 42,
-  padding: "8px 6px",
-  borderRadius: 12,
-  border: "1px solid rgba(148,163,184,0.16)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  textAlign: "center",
-  fontWeight: 1000,
-};
-
-const effText = { fontSize: 12, opacity: 0.75, fontWeight: 900 };
-
-const label = { fontWeight: 950, marginBottom: 6, color: "white" };
-
-const hint = {
-  marginTop: 10,
-  fontSize: 12,
-  opacity: 0.78,
-  borderTop: "1px solid rgba(148,163,184,0.10)",
-  paddingTop: 10,
-};
-
-const hintSmall = { marginTop: 8, fontSize: 12, opacity: 0.75 };
-
-const selectDark = {
-  padding: "12px 12px",
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  fontWeight: 950,
-  width: "100%",
-};
-
-const pillDark = {
-  padding: "10px 12px",
-  borderRadius: 16,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(2,6,23,0.35)",
-};
-
-const pillLabelDark = { opacity: 0.78, fontSize: 12, fontWeight: 950 };
-const pillInputDark = {
-  marginTop: 6,
-  width: "100%",
-  padding: "12px 10px",
-  borderRadius: 12,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.55)",
-  color: "white",
-  fontWeight: 1000,
-  textAlign: "center",
-};
-
-const cardDark = {
-  border: "1px solid rgba(148,163,184,0.14)",
-  borderRadius: 16,
-  padding: 12,
-  background: "rgba(2,6,23,0.35)",
-};
-
-const matchCardDark = {
-  borderRadius: 18,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(2,6,23,0.35)",
-  padding: 12,
-};
-
-const toggleRow = { display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" };
-
-const checkPillDark = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.45)",
-  userSelect: "none",
-};
-
-const miniFieldDark = {
-  minWidth: 120,
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.45)",
-  padding: "10px 12px",
-};
-
-const miniLabel = { fontSize: 12, fontWeight: 950, opacity: 0.75 };
-const miniInputDark = {
-  marginTop: 6,
-  width: "100%",
-  padding: "10px 10px",
-  borderRadius: 12,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(2,6,23,0.35)",
-  color: "white",
-  fontWeight: 1000,
-  textAlign: "center",
-};
-
-const scoreStripWrapDark = {
-  marginTop: 12,
-  borderRadius: 16,
-  overflow: "hidden",
-  border: "1px solid rgba(148,163,184,0.14)",
-};
-
-const scoreStripHeadDark = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, 1fr)",
-  background: "rgba(15,23,42,0.55)",
-};
-
-const scoreStripBodyDark = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, 1fr)",
-  background: "rgba(2,6,23,0.25)",
-};
-
-const scoreStripH = {
-  padding: "10px 10px",
-  textAlign: "center",
-  fontWeight: 950,
-  letterSpacing: -0.2,
-  opacity: 0.9,
-};
-
-const scoreStripV = {
-  padding: "14px 10px",
-  textAlign: "center",
-  fontWeight: 1000,
-  fontSize: 22,
-  letterSpacing: -0.6,
-};
-
-const moneyPillDark = {
-  padding: "10px 12px",
-  borderRadius: 16,
-  border: "2px solid rgba(148,163,184,0.14)",
-  background: "rgba(15,23,42,0.45)",
-  fontWeight: 1000,
-};
-
-const totalsList = { display: "grid", gap: 10 };
-const totalRow = {
-  borderRadius: 16,
-  border: "1px solid rgba(148,163,184,0.14)",
-  background: "rgba(2,6,23,0.35)",
-  padding: 12,
-};
-
-const miniGrid = { display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 8, marginTop: 10 };
-
-const miniStat = {
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.10)",
-  background: "rgba(15,23,42,0.45)",
-  padding: 10,
-};

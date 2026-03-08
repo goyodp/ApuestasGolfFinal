@@ -131,6 +131,18 @@ function segmentColorClass(v) {
   return "seg-as";
 }
 
+function normalizePlayerHcp(player) {
+  const rawHcp =
+    player?.hcp !== undefined && player?.hcp !== null && player?.hcp !== ""
+      ? player.hcp
+      : player?.handicap !== undefined && player?.handicap !== null && player?.handicap !== ""
+      ? player.handicap
+      : 0;
+
+  const normalized = Number(rawHcp);
+  return Number.isFinite(normalized) ? normalized : 0;
+}
+
 /* ---------------- Screen ---------------- */
 
 export default function GroupScorecard() {
@@ -211,6 +223,7 @@ export default function GroupScorecard() {
           const rawPlayers = Array.isArray(data.players) ? data.players : [];
           const migratedPlayers = rawPlayers.map((p) => ({
             ...p,
+            hcp: normalizePlayerHcp(p),
             bonusesEnabled: typeof p?.bonusesEnabled === "boolean" ? p.bonusesEnabled : true,
           }));
 
@@ -227,6 +240,16 @@ export default function GroupScorecard() {
             !("bolaRosa" in data) ||
             !("manualMatchDiffs" in data) ||
             rawPlayers.some((p) => typeof p?.bonusesEnabled !== "boolean") ||
+            rawPlayers.some((p) => {
+              const rawHcp =
+                p?.hcp !== undefined && p?.hcp !== null && p?.hcp !== ""
+                  ? p.hcp
+                  : p?.handicap !== undefined && p?.handicap !== null && p?.handicap !== ""
+                  ? p.handicap
+                  : 0;
+              return !Number.isFinite(Number(rawHcp));
+            }) ||
+            rawPlayers.some((p) => p?.hcp === undefined && p?.handicap !== undefined) ||
             nextGs.birdiePay !== gs.birdiePay ||
             nextGs.eaglePay !== gs.eaglePay ||
             nextGs.albatrossPay !== gs.albatrossPay ||
@@ -329,7 +352,7 @@ export default function GroupScorecard() {
 
     if (changed) patchState({ matchBets: { ...matchBets, ...need } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players.map((p) => p.id).join("|"), state]);
+  }, [players.map((p) => `${p.id}:${p.hcp}`).join("|"), state]);
 
   const addPlayer = async () => {
     if (!state) return;
@@ -731,11 +754,11 @@ export default function GroupScorecard() {
                               <input
                                 type="text"
                                 inputMode="decimal"
-                                defaultValue={String(p.hcp ?? 0)}
+                                value={String(p.hcp ?? 0)}
                                 onChange={(e) => {
-                                  e.target.value = sanitizeSignedNumberStr(e.target.value);
+                                  const cleaned = sanitizeSignedNumberStr(e.target.value);
+                                  updatePlayer(p.id, "hcp", cleaned === "" ? 0 : toSignedNumber(cleaned, 0));
                                 }}
-                                onBlur={(e) => updatePlayer(p.id, "hcp", toSignedNumber(e.target.value, 0))}
                                 className="gs-input gs-input-hcp"
                                 disabled={screenshotMode}
                               />

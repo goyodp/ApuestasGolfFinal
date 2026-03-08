@@ -147,15 +147,6 @@ export function scoreCategory(gross, par) {
 // =====================
 // Handicap / strokes
 // =====================
-/**
- * buildStrokeArray supports POSITIVE and NEGATIVE strokes.
- * - Positive strokes: assign 1..18 (SI 1,2,3... hardest holes first)
- * - Negative strokes (plus handicap): assign 18..1
- *
- * Returned array is SIGNED:
- * - +1 means you RECEIVE a stroke (net = gross - 1)
- * - -1 means you GIVE a stroke (net = gross + 1)
- */
 export function buildStrokeArray(strokes, strokeIndexes) {
   const s = Math.round(strokes || 0);
   const abs = Math.abs(s);
@@ -172,9 +163,6 @@ export function buildStrokeArray(strokes, strokeIndexes) {
   return arr;
 }
 
-/**
- * NET + Stableford uses % global
- */
 export function buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes) {
   const percent = toNum(hcpPercent) / 100;
   const strokes = Math.round((playerHcp || 0) * percent);
@@ -182,15 +170,13 @@ export function buildHcpAdjustments(playerHcp, hcpPercent, strokeIndexes) {
 }
 
 /**
- * Convierte una diferencia de handicap en strokes por hoyo para match play.
+ * Match diff:
+ * diff > 0 => B recibe
+ * diff < 0 => A recibe
  *
- * diff > 0 => B recibe golpes
- * diff < 0 => A recibe golpes
- *
- * Reglas:
- * 1..18   = una vuelta de strokes
- * 19..36  = segunda vuelta (dobles en los primeros diff-18 SI)
- * 37..54  = tercera vuelta, etc.
+ * 1..18   = sencillas
+ * 19..36  = dobles
+ * 37..54  = triples
  */
 export function buildMatchStrokesByDiff(diff, strokeIndexes) {
   const d = Math.round(diff || 0);
@@ -206,7 +192,7 @@ export function buildMatchStrokesByDiff(diff, strokeIndexes) {
   const target = d < 0 ? rawA : rawB;
 
   for (let k = 0; k < abs; k++) {
-    const si = (k % 18) + 1; // siempre desde SI 1 hacia 18
+    const si = (k % 18) + 1;
     const holeIdx = strokeIndexes.indexOf(si);
     if (holeIdx >= 0) target[holeIdx] += 1;
   }
@@ -218,12 +204,6 @@ export function buildMatchStrokesByDiff(diff, strokeIndexes) {
   };
 }
 
-/**
- * MATCHES = 100% diferencia de handicap
- * diff = hcpB - hcpA
- * si diff > 0, B recibe strokes
- * si diff < 0, A recibe strokes
- */
 export function buildMatchStrokesByHcpDiff100(hcpA, hcpB, strokeIndexes) {
   const diff = Math.round((hcpB || 0) - (hcpA || 0));
   return buildMatchStrokesByDiff(diff, strokeIndexes);
@@ -251,8 +231,7 @@ export function sumNet9(arr18, hcpAdj18, startIdx) {
 }
 
 // =====================
-// Stableford (NET Stableford)
-// points = max(0, 2 + (par - netScore))
+// Stableford
 // =====================
 export function stablefordForHole({ gross, par, hcpAdj }) {
   const g = safeInt(gross);
@@ -430,14 +409,14 @@ function segmentMultiplier(dobladaEnabled) {
 }
 
 /**
- * Carry real:
- * - Si F9 queda AS y carryF9ToTotal = true, ese stake se suma al Total
- * - Si B9 queda AS y carryB9ToTotal = true, ese stake se suma al Total
+ * Reglas:
+ * - Doblada solo aplica si la vuelta NO queda AS
+ * - Si la vuelta queda AS y carry está activo, se arrastra SOLO el bet base
  *
- * Ejemplo bet=50:
- * - total base = 50
- * - F9 AS con carry => +50 (o +100 si F9 doblada)
- * - B9 AS con carry => +50 (o +100 si B9 doblada)
+ * Ejemplo:
+ * bet = 50
+ * F9 doblada + F9 ganado => F9 vale 100
+ * F9 doblada + F9 AS + carry => carry = 50, no 100
  */
 export function calcMatchMoneyForPair({
   pairResult,
@@ -453,18 +432,17 @@ export function calcMatchMoneyForPair({
   const carryF9ToTotal = !!carrySettings?.carryF9ToTotal;
   const carryB9ToTotal = !!carrySettings?.carryB9ToTotal;
 
-  const frontStake = bet * f9Mult;
-  const backStake = bet * b9Mult;
-  const totalBaseStake = bet;
+  const frontStakePlayed = pairResult.front === 0 ? bet : bet * f9Mult;
+  const backStakePlayed = pairResult.back === 0 ? bet : bet * b9Mult;
 
-  const moneyF9 = pairResult.front === 0 ? 0 : Math.sign(pairResult.front) * frontStake;
-  const moneyB9 = pairResult.back === 0 ? 0 : Math.sign(pairResult.back) * backStake;
+  const moneyF9 = pairResult.front === 0 ? 0 : Math.sign(pairResult.front) * frontStakePlayed;
+  const moneyB9 = pairResult.back === 0 ? 0 : Math.sign(pairResult.back) * backStakePlayed;
 
-  const carryFromF9 = pairResult.front === 0 && carryF9ToTotal ? frontStake : 0;
-  const carryFromB9 = pairResult.back === 0 && carryB9ToTotal ? backStake : 0;
+  const carryFromF9 = pairResult.front === 0 && carryF9ToTotal ? bet : 0;
+  const carryFromB9 = pairResult.back === 0 && carryB9ToTotal ? bet : 0;
 
   const carryToTotal = carryFromF9 + carryFromB9;
-  const totalStake = totalBaseStake + carryToTotal;
+  const totalStake = bet + carryToTotal;
 
   const moneyT = pairResult.total === 0 ? 0 : Math.sign(pairResult.total) * totalStake;
 
@@ -478,8 +456,8 @@ export function calcMatchMoneyForPair({
     carryFromF9,
     carryFromB9,
     stakes: {
-      front: frontStake,
-      back: backStake,
+      front: frontStakePlayed,
+      back: backStakePlayed,
       total: totalStake,
     },
     multipliers: { f9Mult, b9Mult },

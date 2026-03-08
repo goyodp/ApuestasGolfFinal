@@ -285,6 +285,7 @@ export default function GroupScorecard() {
   const manualMatchDiffs = state?.manualMatchDiffs || {};
 
   const allowManualMatchDiffs =
+    !!session?.manualMatchDiffsEnabled ||
     !!session?.allowManualMatchDiffs ||
     !!session?.allowManualAdvantages ||
     !!session?.historyHcpEnabled ||
@@ -535,7 +536,7 @@ export default function GroupScorecard() {
     matchBets,
     dobladas,
     groupSettings,
-    manualMatchDiffs,
+    manualDiffs: manualMatchDiffs,
   });
 
   const moneyRows = players.map((p) => {
@@ -575,7 +576,10 @@ export default function GroupScorecard() {
         pairResult: pairRes,
         matchBetsForPair: bet,
         dobladasForPair: dbl,
-        groupSettings,
+        carrySettings: {
+          carryF9ToTotal: !!groupSettings?.carryF9ToTotal,
+          carryB9ToTotal: !!groupSettings?.carryB9ToTotal,
+        },
       });
 
       matchesList.push({ key, a, b, pairRes, bet, dbl, money, manualDiff });
@@ -825,7 +829,7 @@ export default function GroupScorecard() {
             <>
               <Collapsible
                 title="Ajustes del grupo"
-                subtitle="Pagos + carry del match total"
+                subtitle="Pagos + carry real al Total"
                 open={openPayouts}
                 setOpen={setOpenPayouts}
               >
@@ -861,7 +865,9 @@ export default function GroupScorecard() {
                     />
                     <div>
                       <div className="gs-toggle-title">Carry F9 → Total</div>
-                      <div className="gs-toggle-sub">Si F9 queda AS, no afecta. Si no queda AS, se arrastra al total.</div>
+                      <div className="gs-toggle-sub">
+                        Si F9 queda AS, el stake de F9 se suma al stake del Total.
+                      </div>
                     </div>
                   </label>
 
@@ -873,13 +879,15 @@ export default function GroupScorecard() {
                     />
                     <div>
                       <div className="gs-toggle-title">Carry B9 → Total</div>
-                      <div className="gs-toggle-sub">Misma lógica para la vuelta del 10–18.</div>
+                      <div className="gs-toggle-sub">
+                        Si B9 queda AS, el stake de B9 se suma al stake del Total.
+                      </div>
                     </div>
                   </label>
                 </div>
 
                 <div className="gs-hint">
-                  “Bonus” por jugador te deja excluirlo de birdies/eagles/albatross sin quitarlo del grupo.
+                  “Bonus” por jugador lo excluye de Birdie / Eagle / Albatross, pero sigue jugando matches y greens.
                 </div>
               </Collapsible>
 
@@ -938,7 +946,7 @@ export default function GroupScorecard() {
 
               <Collapsible
                 title="Matches"
-                subtitle={`Bet default $${DEFAULT_BET_AMOUNT} · color por F9/B9/Total · mostramos solo $Total`}
+                subtitle={`Bet default $${DEFAULT_BET_AMOUNT} · color por F9/B9/Total · carry real al Total`}
                 open={openMatches}
                 setOpen={setOpenMatches}
               >
@@ -1029,12 +1037,24 @@ function MatchCardDark({ m, onBet, onDbl, allowManualMatchDiffs, onManualDiff })
           <div className="gs-match-title">
             <span>{m.a.name}</span> <span className="gs-vs">vs</span> <span>{m.b.name}</span>
           </div>
+
           <div className="gs-hint-small">
-            diff HCP auto: <b>{m.pairRes.diff}</b>
+            diff HCP usado: <b>{m.pairRes.diff}</b>
             {allowManualMatchDiffs && m.manualDiff !== undefined && m.manualDiff !== null ? (
               <>
                 {" "}
                 · manual: <b>{m.manualDiff}</b>
+              </>
+            ) : null}
+          </div>
+
+          <div className="gs-hint-small">
+            Stake F9: <b>${Math.round(m.money.stakes.front)}</b> · Stake B9: <b>${Math.round(m.money.stakes.back)}</b> · Stake Total:{" "}
+            <b>${Math.round(m.money.stakes.total)}</b>
+            {m.money.carryToTotal > 0 ? (
+              <>
+                {" "}
+                · Carry: <b>${Math.round(m.money.carryToTotal)}</b>
               </>
             ) : null}
           </div>
@@ -1193,7 +1213,7 @@ const styles = `
     --danger: #fecaca;
     --danger-bg: rgba(239,68,68,.12);
     --danger-border: rgba(239,68,68,.30);
-    --score-border: rgba(255,255,255,.82);
+    --score-border: rgba(255,255,255,.88);
     --score-border-filled: rgba(148,163,184,.16);
     --score-bg: rgba(15,23,42,.55);
   }
@@ -1263,6 +1283,7 @@ const styles = `
   }
 
   .gs-title-wrap { min-width: 0; }
+
   .gs-title-row {
     display: flex;
     align-items: center;
@@ -1429,6 +1450,7 @@ const styles = `
   }
 
   .gs-collapsible-copy { min-width: 0; }
+
   .gs-chevron {
     font-size: 18px;
     opacity: .8;
